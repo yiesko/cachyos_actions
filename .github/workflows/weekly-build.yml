@@ -286,16 +286,19 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: bash scripts/sign-rpm.sh out
 
-      - name: Generate SHA256SUMS
+      - name: Generate checksums (SHA256 + MD5)
         working-directory: out
         # NOTE: block scalar (|), NOT a backslash continuation: YAML
         # folding turns `\`+newline into `\`+space, which made find see
         # `-print0 ` as a path ("paths must precede expression") while
-        # the pipeline masked the failure and shipped a bogus SHA256SUMS.
+        # the pipeline masked the failure and shipped a bogus file.
         run: |
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -print0 \
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'MD5SUMS' -print0 \
             | sort -z | xargs -0 sha256sum > SHA256SUMS
           test -s SHA256SUMS || { echo "::error::SHA256SUMS is empty" >&2; exit 1; }
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'MD5SUMS' -print0 \
+            | sort -z | xargs -0 md5sum > MD5SUMS
+          test -s MD5SUMS || { echo "::error::MD5SUMS is empty" >&2; exit 1; }
           cat SHA256SUMS
 
       - name: Build per-cell summary
