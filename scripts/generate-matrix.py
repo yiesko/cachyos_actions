@@ -4,12 +4,12 @@ Build the GitHub Actions build matrix (kernel variant x ISA level)
 from config/variants.yml and config/isa-levels.yml.
 
 Every enabled variant is crossed with every ISA level it supports
-(respecting each variant's optional `min_isa` floor). The three build
-jobs in weekly-build.yml (Arch / Debian / Fedora) all consume the exact
-same matrix - packaging format is a job, not a matrix dimension, since
-each format needs a genuinely different toolchain (makepkg needs an Arch
-container, .deb/.rpm need kbuild's built-in targets on Debian/Fedora
-respectively).
+(respecting each variant's optional `min_isa` floor). The Arch job and
+the kbuild job consume DIFFERENT matrices from the same cells: Arch
+builds each cell once (makepkg pins LTO per PKGBUILD, no per-cell
+override possible), while kbuild additionally gets ThinLTO+FullLTO
+duplicate cells for --lto-variants (default: the flagship), each with a
+name suffix so packages never collide (`-thin` / `-full`).
 
 This also resolves, PER VARIANT, the exact source tag each folder's live
 PKGBUILD is pinned to (variants track different series: lts -> 6.18.x,
@@ -20,6 +20,7 @@ Usage:
   generate-matrix.py [--variants id,id,...] [--isa v1,v2,...]
                      [--skip-version-resolution] [--version-only]
                      [--force] [--repo owner/repo]
+                     [--lto-variants id,id,...] [--build-lto]
 
 Writes `matrix={...}`, `kernel_version=<x.y.z>` and `src_tag=<cachyos-tag>`
 to $GITHUB_OUTPUT (or stdout, for local testing).
@@ -146,6 +147,12 @@ def main():
                         help="bypass the freshness gate (rebuild even if unchanged)")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
                         help="owner/repo for the last-release manifest lookup")
+    parser.add_argument("--lto-variants", default="cachyos",
+                        help="comma-separated variant ids gaining extra ThinLTO+Full "
+                             "kbuild cells (Arch excluded: makepkg pins LTO per PKGBUILD)")
+    parser.add_argument("--build-lto", action="store_true",
+                        help="whole-run ThinLTO for kbuild cells (legacy input mode; "
+                             "disables the per-variant LTO duplicates)")
     args = parser.parse_args()
 
     if args.version_only:
@@ -174,6 +181,7 @@ def main():
 
     wanted_variants = {v for v in args.variants.split(",") if v}
     wanted_isa = {i for i in args.isa.split(",") if i}
+    lto_wanted = {v for v in args.lto_variants.split(",") if v}
 
     include = []
     skipped_disabled = 0
@@ -213,6 +221,11 @@ def main():
             if RANK[isa["id"]] < floor:
                 continue
 
+            # lto selects the kbuild toolchain (USE_LTO); suffix keeps
+            # every artifact/status filename unique per flavor. Base cells
+            # follow --build-lto (legacy whole-run mode); otherwise the
+            # --lto-variants gain extra thin+full kbuild duplicates.
+            base_lto = "thin" if args.build_lto else "none"
             include.append({
                 "variant": variant["id"],
                 "pkgbuild_dir": pbd,
@@ -223,20 +236,38 @@ def main():
                 "cachy_config": "yes" if variant.get("cachy_config", True) else "no",
                 "preempt": variant.get("preempt", "full"),
                 "hz": variant.get("hz", 1000),
+                "lto": base_lto,
+                "suffix": "" if base_lto == "none" else f"-{base_lto}",
                 "src_tag": src_tag,
                 "isa": isa["id"],
                 "isa_num": isa["isa_num"],
                 "march": isa["march"],
                 "pkg_suffix": isa["pkg_suffix"],
             })
+            if (not args.build_lto and variant["id"] in lto_wanted):
+                for flavor in ("thin", "full"):
+                    dup = dict(include[-1])
+                    dup.update({"lto": flavor, "suffix": f"-{flavor}",
+                                "lto_dup": True})
+                    include.append(dup)
 
-    matrix = {"include": include}
+    unknown_lto = lto_wanted - {v["id"] for v in variants_cfg["variants"]}
+    if unknown_lto:
+        print(f"[generate-matrix] WARNING: --lto-variants ids not found in "
+              f"config/variants.yml (ignored): {sorted(unknown_lto)}",
+              file=sys.stderr)
+
+    # Arch cannot take per-cell LTO (makepkg pins it per PKGBUILD), so it
+    # consumes only base cells; kbuild consumes everything.
+    arch_cells = [c for c in include if not c.get("lto_dup")]
+    matrix_arch = {"include": arch_cells}
+    matrix_kbuild = {"include": include}
 
     print(
-        f"[generate-matrix] {len(include)} build cells "
+        f"[generate-matrix] {len(arch_cells)} Arch cells + {len(include)} kbuild cells "
         f"({len(variants_cfg['variants']) - skipped_disabled} variants enabled, "
-        f"{skipped_disabled} disabled in config). This many cells will be built "
-        f"by EACH of the two build jobs (build-arch, build-kbuild).",
+        f"{skipped_disabled} disabled in config; "
+        f"LTO duplicates: {len(include) - len(arch_cells)}).",
         file=sys.stderr,
     )
 
@@ -324,7 +355,8 @@ def main():
     series_str = ", ".join(series) if series else kernel_version
 
     lines = [
-        f"matrix={json.dumps(matrix)}\n",
+        f"matrix_arch={json.dumps(matrix_arch)}\n",
+        f"matrix_kbuild={json.dumps(matrix_kbuild)}\n",
         f"kernel_version={kernel_version}\n",
         f"src_tag={src_tag}\n",
         f"series={series_str}\n",

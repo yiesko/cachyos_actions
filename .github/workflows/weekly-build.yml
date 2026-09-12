@@ -31,9 +31,13 @@ on:
         type: string
         default: ""
       build_lto:
-        description: "Build with Clang ThinLTO (slower, memory-hungry)"
+        description: "ThinLTO for ALL kbuild cells (slower, memory-hungry; disables per-variant LTO cells)"
         type: boolean
         default: false
+      lto_variants:
+        description: "Variants gaining extra ThinLTO+Full kbuild cells (Arch excluded: makepkg pins LTO)"
+        type: string
+        default: "cachyos"
       force_rebuild:
         description: "Bypass the freshness gate (rebuild even if unchanged)"
         type: boolean
@@ -51,7 +55,8 @@ jobs:
     name: Generate build matrix
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
+      matrix_arch: ${{ steps.gen.outputs.matrix_arch }}
+      matrix_kbuild: ${{ steps.gen.outputs.matrix_kbuild }}
       kernel_version: ${{ steps.gen.outputs.kernel_version }}
       src_tag: ${{ steps.gen.outputs.src_tag }}
       series: ${{ steps.gen.outputs.series }}
@@ -75,9 +80,11 @@ jobs:
         run: |
           args=()
           if [[ "${{ inputs.force_rebuild }}" == "true" ]]; then args+=(--force); fi
+          if [[ "${{ inputs.build_lto }}" == "true" ]]; then args+=(--build-lto); fi
           python3 scripts/generate-matrix.py \
             --variants "${{ inputs.variants }}" \
             --isa "${{ inputs.isa_levels }}" \
+            --lto-variants "${{ inputs.lto_variants }}" \
             "${args[@]}"
 
   # ------------------------------------------------------------------
@@ -94,7 +101,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 6
-      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix_arch) }}
     env:
       USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
     steps:
@@ -174,7 +181,7 @@ jobs:
   # Ubuntu's rpmbuild (apt 'rpm') handles the kernel's generated spec.
   # ------------------------------------------------------------------
   build-kbuild:
-    name: Kbuild ${{ matrix.variant }} ${{ matrix.isa }} (.deb+.rpm)
+    name: Kbuild ${{ matrix.variant }} ${{ matrix.isa }}${{ matrix.suffix }} (.deb+.rpm)
     needs: generate-matrix
     if: needs.generate-matrix.outputs.changed == 'true'
     runs-on: ubuntu-24.04
@@ -182,11 +189,11 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 6
-      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix_kbuild) }}
     env:
       SRC_TAG: ${{ matrix.src_tag }}
       CCACHE_DIR: ${{ github.workspace }}/ccache
-      USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
+      USE_LTO: ${{ matrix.lto }}
       CACHY_CONFIG: ${{ matrix.cachy_config }}
       PREEMPT_MODE: ${{ matrix.preempt }}
       HZ_TICKS: ${{ matrix.hz }}
@@ -212,9 +219,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ccache
-          # src_tag + build_lto in the key: a cache from 7.2.3 must never
-          # poison a 7.2.4 build (or a ThinLTO one).
-          key: ccache-kbuild-${{ matrix.variant }}-${{ matrix.isa }}-${{ matrix.src_tag }}-${{ inputs.build_lto }}
+          # src_tag + lto in the key: a cache from 7.2.3 must never
+          # poison a 7.2.4 build, and GCC/ThinLTO/Full objects must not
+          # share an entry (same sources, different flags).
+          key: ccache-kbuild-${{ matrix.variant }}-${{ matrix.isa }}-${{ matrix.src_tag }}-${{ matrix.lto }}-${{ inputs.build_lto }}
           restore-keys: |
             ccache-kbuild-${{ matrix.variant }}-${{ matrix.isa }}-
             ccache-kbuild-
@@ -240,15 +248,15 @@ jobs:
           mkdir -p cell-status
           result="${{ steps.build.outcome }}"
           case "$result" in
-            success) echo ok > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild.txt" ;;
-            *)       echo "fail:$result" > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild.txt" ;;
+            success) echo ok > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild${{ matrix.suffix }}.txt" ;;
+            *)       echo "fail:$result" > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild${{ matrix.suffix }}.txt" ;;
           esac
 
       - name: Upload cell artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pkg-kbuild-${{ matrix.variant }}-${{ matrix.isa }}
+          name: pkg-kbuild-${{ matrix.variant }}-${{ matrix.isa }}${{ matrix.suffix }}
           path: |
             out/
             cell-status/
@@ -285,7 +293,7 @@ jobs:
           find cells -type f \( -name '*.rpm' -o -name '*.deb' \
              -o -name '*.pkg.tar.zst' -o -name '*.pkg.tar.zst.sig' \) \
              -exec mv -v {} out/ \;
-          find cells -type f \( -name '*-arch.txt' -o -name '*-kbuild.txt' \) -exec mv -v {} ./ \;
+          find cells -type f \( -name '*-arch.txt' -o -name '*-kbuild*.txt' \) -exec mv -v {} ./ \;
           # Never publish an empty release: every format needs artifacts,
           # and duplicate basenames mean an ISA-suffix regression.
           shopt -s nullglob
@@ -304,10 +312,11 @@ jobs:
 
       - name: Write versions.json manifest
         # Feeds the NEXT run's freshness gate: variant -> exact source tag
-        # built here. Lands in out/ before the checksums so it is hashed
+        # built here (kbuild matrix: same tags, LTO duplicates collapse).
+        # Lands in out/ before the checksums so it is hashed
         # and published like every other asset.
         env:
-          MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix }}
+          MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix_kbuild }}
           KERNEL_VERSION: ${{ needs.generate-matrix.outputs.kernel_version }}
         run: |
           echo "$MATRIX_JSON" | jq \
@@ -341,7 +350,7 @@ jobs:
 
       - name: Build per-cell summary
         env:
-          MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix }}
+          MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix_kbuild }}
           SERIES: ${{ needs.generate-matrix.outputs.series }}
         run: |
           {
@@ -379,21 +388,33 @@ jobs:
             echo
             echo "### Build matrix"
             echo
-            echo "| Variant | ISA | Arch | Kbuild (.deb/.rpm) |"
-            echo "|---|---|---|---|"
-            echo "$MATRIX_JSON" | jq -r '.include[] | [.variant, .isa] | @tsv' |
-            while IFS=$'\t' read -r v isa; do
-              row="| ${v} | ${isa} |"
-              for fmt in arch kbuild; do
-                f="./${v}-${isa}-${fmt}.txt"
+            echo "Flavor \`gcc\` = default compiler, \`thin\`/\`full\` = Clang LTO extras (kbuild only — Arch ships each PKGBUILD's authentic default, flagship/rc ThinLTO)."
+            echo
+            echo "| Variant | ISA | Flavor | Arch | Kbuild (.deb/.rpm) |"
+            echo "|---|---|---|---|---|"
+            echo "$MATRIX_JSON" | jq -r '.include[] | [.variant, .isa, .lto, .suffix] | @tsv' |
+            while IFS=$'\t' read -r v isa lto suf; do
+              if [[ "$lto" == "none" ]]; then flavor="gcc"; else flavor="$lto"; fi
+              # Arch has no per-flavor cells (makepkg pins LTO per PKGBUILD).
+              if [[ "$lto" == "none" ]]; then
+                f="./${v}-${isa}-arch.txt"
                 if [[ -f "$f" ]]; then
                   s="$(cat "$f")"
-                  [[ "$s" == ok ]] && row+=" :white_check_mark: |" || row+=" :x: (\`${s#fail:}\`) |"
+                  [[ "$s" == ok ]] && archcell=" :white_check_mark: |" || archcell=" :x: (\`${s#fail:}\`) |"
                 else
-                  row+=" :grey_question: |"
+                  archcell=" :grey_question: |"
                 fi
-              done
-              echo "$row"
+              else
+                archcell=" — |"
+              fi
+              kf="./${v}-${isa}-kbuild${suf}.txt"
+              if [[ -f "$kf" ]]; then
+                s="$(cat "$kf")"
+                [[ "$s" == ok ]] && kcell=" :white_check_mark: |" || kcell=" :x: (\`${s#fail:}\`) |"
+              else
+                kcell=" :grey_question: |"
+              fi
+              echo "| ${v} | ${isa} | ${flavor} |${archcell}${kcell}"
             done
             echo
             echo "### Integrity"

@@ -23,7 +23,17 @@ set -euo pipefail
 
 cd "$SRCDIR"
 
-export LOCALVERSION="-${VARIANT}-${ISA}"
+# Same LTO flavor suffix rule as package-deb.sh (kbuild's binrpm-pkg turns
+# dashes into underscores, so -thin/-full survive into the .rpm names).
+case "${USE_LTO:-none}" in
+  none) LTO_SUFFIX="" ;;
+  thin|thin-dist|full) LTO_SUFFIX="-${USE_LTO}" ;;
+  *) echo "unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
+esac
+# Same builder tag as package-deb.sh (shows in uname -r; kbuild turns the
+# dashes into underscores in .rpm names). Arch path cannot carry it.
+BUILDER_SUFFIX="${BUILDER_SUFFIX:--yieskoW}"
+export LOCALVERSION="-${VARIANT}-${ISA}${LTO_SUFFIX}${BUILDER_SUFFIX}"
 export KCFLAGS="-march=${MARCH}"
 export KCPPFLAGS="-march=${MARCH}"
 export KBUILD_BUILD_HOST="cachyos-ci"

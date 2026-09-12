@@ -142,13 +142,17 @@ print(f"# {rel['tag_name']}", file=sys.stderr)
 V, I = re.escape(variant), re.escape(isa)
 # NOTE: kbuild's binrpm-pkg rewrites dashes to underscores in rpm versions
 # (rpm forbids '-'), so cachyos-bore ships as ..._cachyos_bore_v2-...;
-# deb/arch names keep the dashes.
+# deb/arch names keep the dashes. The optional tail covers flavor/builder
+# suffixes (e.g. _thin, _yieskoW) while still matching older suffix-less
+# releases.
+TAIL_RPM = r"(_[A-Za-z0-9]+)*"
+TAIL_DEB = r"(-[A-Za-z0-9]+)?"
 Vr = re.escape(variant.replace("-", "_"))
 pats = []
 if fmt == "rpm":
-    pats = [re.compile(rf"^kernel-(devel-|headers-)?[^_]*_{Vr}_{I}-\d.*\.rpm$")]
+    pats = [re.compile(rf"^kernel-(devel-|headers-)?[^_]*_{Vr}_{I}{TAIL_RPM}-\d.*\.rpm$")]
 elif fmt == "deb":
-    pats = [re.compile(rf"^linux-(image|headers|libc-dev)-.*-{V}-{I}_.*\.deb$")]
+    pats = [re.compile(rf"^linux-(image|headers|libc-dev)-.*-{V}-{I}{TAIL_DEB}_.*\.deb$")]
 else:  # arch: v1 has no -vN suffix, v2+ does
     suf = "" if isa == "v1" else f"-{I}"
     pats = [re.compile(rf"^linux-{V}(-headers)?-\d.*-x86_64{suf}\.pkg\.tar\.zst$")]

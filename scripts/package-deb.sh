@@ -20,7 +20,20 @@ set -euo pipefail
 cd "$SRCDIR"
 
 KVER="$(make -s kernelversion)"
-export LOCALVERSION="-${VARIANT}-${ISA}"
+# LTO flavor suffix: keeps ThinLTO/Full .debs unambiguous next to the
+# default-compiler ones in the same release (same rule the CI matrix uses
+# for status filenames: "" for none, "-<lto>" otherwise).
+case "${USE_LTO:-none}" in
+  none) LTO_SUFFIX="" ;;
+  thin|thin-dist|full) LTO_SUFFIX="-${USE_LTO}" ;;
+  *) echo "unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
+esac
+# Builder tag: brands uname -r / package versions as this project's builds
+# (e.g. 7.2.4-cachyos-bore-v2-yieskoW). Override with BUILDER_SUFFIX=""
+# or your own tag; empty disables. NOTE: Arch packages cannot carry this
+# (makepkg uses the upstream PKGBUILD unmodified by design).
+BUILDER_SUFFIX="${BUILDER_SUFFIX:--yieskoW}"
+export LOCALVERSION="-${VARIANT}-${ISA}${LTO_SUFFIX}${BUILDER_SUFFIX}"
 export KDEB_PKGVERSION="${KVER}${LOCALVERSION}-1"
 export KCFLAGS="-march=${MARCH}"
 export KCPPFLAGS="-march=${MARCH}"
