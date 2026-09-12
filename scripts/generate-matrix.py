@@ -19,9 +19,18 @@ matrix cell so every packaging path builds that variant's true base.
 Usage:
   generate-matrix.py [--variants id,id,...] [--isa v1,v2,...]
                      [--skip-version-resolution] [--version-only]
+                     [--force] [--repo owner/repo]
 
 Writes `matrix={...}`, `kernel_version=<x.y.z>` and `src_tag=<cachyos-tag>`
 to $GITHUB_OUTPUT (or stdout, for local testing).
+
+Freshness gate: after resolving every enabled variant's live source tag,
+the script fetches versions.json from the repo's latest stable release
+and compares. Outputs `changed=true/false` (+ `changed_variants`,
+`prev_release`) so the workflow can skip the ~13h matrix when upstream
+did not move. The lookup is best-effort and fails OPEN (builds) — a
+missing manifest, a new variant, or any network error means changed.
+`--force` bypasses the comparison (manual rebuilds).
 """
 import argparse
 import json
@@ -89,6 +98,40 @@ def resolve_kernel_version(pkgbuild_dir: str = "linux-cachyos-bore") -> tuple[st
     return f"{major}.{minor}", f"cachyos-{major}.{minor}-{tagrel}"
 
 
+def fetch_last_manifest(repo: str) -> tuple[str, dict | None]:
+    """Fetch versions.json from the repo's latest stable release.
+
+    Returns (release_tag, manifest) or (None, None)/(tag, None) on ANY
+    failure — the freshness check is best-effort and fails OPEN (build).
+    No auth needed: public repo reads allow 60 req/h unauthenticated,
+    and this costs exactly 2 calls when a manifest exists.
+    """
+    if not repo or "/" not in repo:
+        return None, None
+    try:
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        req = urllib.request.Request(url, headers={"User-Agent": "cachyos-matrix-script",
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            rel = json.load(resp)
+        tag = (rel.get("tag_name") or "").strip()
+        asset_url = ""
+        for asset in rel.get("assets", []):
+            if asset.get("name") == "versions.json":
+                asset_url = asset.get("browser_download_url", "")
+                break
+        if not asset_url:
+            return tag or None, None
+        areq = urllib.request.Request(asset_url, headers={"User-Agent": "cachyos-matrix-script"})
+        with urllib.request.urlopen(areq, timeout=30) as aresp:
+            manifest = json.load(aresp)
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("variants"), dict):
+            return tag or None, None
+        return tag or None, manifest
+    except Exception:  # noqa: BLE001 - best effort by design, fail open
+        return None, None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--variants", default="",
@@ -99,6 +142,10 @@ def main():
                         help="don't hit CachyOS's live PKGBUILD (offline testing)")
     parser.add_argument("--version-only", action="store_true",
                         help="only resolve kernel_version/src_tag, skip matrix")
+    parser.add_argument("--force", action="store_true",
+                        help="bypass the freshness gate (rebuild even if unchanged)")
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
+                        help="owner/repo for the last-release manifest lookup")
     args = parser.parse_args()
 
     if args.version_only:
@@ -133,6 +180,8 @@ def main():
     # Several variants share a pkgbuild_dir series; resolve each folder's
     # live tag once and cache it (also keeps API calls bounded).
     tag_cache: dict[str, str] = {}
+    # variant id -> resolved src_tag, for the freshness gate below.
+    variant_tags: dict[str, str] = {}
 
     for variant in variants_cfg["variants"]:
         if not variant.get("enabled", False):
@@ -154,6 +203,7 @@ def main():
             src_tag = tag_cache[pbd]
         else:
             src_tag = ""
+        variant_tags[variant["id"]] = src_tag
 
         floor = RANK[variant.get("min_isa", "v1")]
 
@@ -214,10 +264,57 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
 
+    # --- freshness gate: skip the ~13h matrix when upstream did not move.
+    # Compares the just-resolved tags against versions.json from the latest
+    # stable release. New variants (absent from the manifest) count as
+    # changed; disabled ones are ignored. Fails OPEN (build) on any doubt.
+    changed = True
+    changed_ids: list[str] = sorted(variant_tags)
+    prev_release = ""
+    if args.force:
+        reason = "forced rebuild (--force)"
+    elif args.skip_version_resolution:
+        reason = "version resolution skipped (offline mode)"
+    else:
+        prev_release, manifest = fetch_last_manifest(args.repo)
+        prev_release = prev_release or ""
+        if manifest is None:
+            if prev_release:
+                reason = f"no versions.json asset in last release ({prev_release})"
+            else:
+                reason = "could not read last release manifest"
+        else:
+            prev_vars = manifest.get("variants", {})
+            diffs = [vid for vid, tag in sorted(variant_tags.items())
+                     if prev_vars.get(vid) != tag]
+            if diffs:
+                changed_ids = diffs
+                moves = ", ".join(f"{vid} {prev_vars.get(vid, '?')}->{variant_tags[vid]}"
+                                  for vid in diffs)
+                reason = f"upstream moved: {moves}"
+            else:
+                changed = False
+                changed_ids = []
+                reason = (f"all {len(variant_tags)} variant(s) unchanged "
+                          f"since {prev_release}")
+    print(f"[generate-matrix] freshness: changed={changed} ({reason}).",
+          file=sys.stderr)
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "a") as f:
+            if changed:
+                f.write(f"### Freshness gate: BUILD\n\n{reason}\n")
+            else:
+                f.write(f"### Freshness gate: SKIP\n\nNo upstream changes "
+                        f"({reason}) — build jobs will skip.\n")
+
     lines = [
         f"matrix={json.dumps(matrix)}\n",
         f"kernel_version={kernel_version}\n",
         f"src_tag={src_tag}\n",
+        f"changed={'true' if changed else 'false'}\n",
+        f"changed_variants={json.dumps(changed_ids)}\n",
+        f"prev_release={prev_release}\n",
     ]
     gh_output = os.environ.get("GITHUB_OUTPUT")
     if gh_output:

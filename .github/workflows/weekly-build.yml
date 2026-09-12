@@ -3,9 +3,15 @@ name: Weekly kernel matrix (Arch / Debian / Fedora)
 # Builds every enabled variant x ISA level (see config/*.yml) through
 # three packaging paths and aggregates everything into one stable release.
 #
+# Freshness gate: generate-matrix compares each variant's live source tag
+# against versions.json from the latest stable release and skips the
+# (~13h) matrix when upstream did not move since last time. Override with
+# the force_rebuild input (or wait — filtered dispatches still compare
+# only their own subset).
+#
 # Cost facts (GitHub Actions, 2026):
 #   - PUBLIC repos get unlimited Linux minutes -> this matrix is sized
-#     for that (~38 Arch cells + ~38 merged kbuild cells per week).
+#     for that (~34 Arch cells + ~34 merged kbuild cells per week).
 #   - PRIVATE repos only get a few thousand free minutes per month;
 #     a single kernel compile is 60-120+ minutes, so running the full
 #     matrix privately will burn the quota in one run.
@@ -28,6 +34,10 @@ on:
         description: "Build with Clang ThinLTO (slower, memory-hungry)"
         type: boolean
         default: false
+      force_rebuild:
+        description: "Bypass the freshness gate (rebuild even if unchanged)"
+        type: boolean
+        default: false
       publish_repo:
         description: "Publish RPMs as a DNF repo on GitHub Pages"
         type: boolean
@@ -44,6 +54,9 @@ jobs:
       matrix: ${{ steps.gen.outputs.matrix }}
       kernel_version: ${{ steps.gen.outputs.kernel_version }}
       src_tag: ${{ steps.gen.outputs.src_tag }}
+      changed: ${{ steps.gen.outputs.changed }}
+      changed_variants: ${{ steps.gen.outputs.changed_variants }}
+      prev_release: ${{ steps.gen.outputs.prev_release }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -59,9 +72,12 @@ jobs:
       - name: Resolve variant x ISA matrix + current CachyOS version
         id: gen
         run: |
+          args=()
+          if [[ "${{ inputs.force_rebuild }}" == "true" ]]; then args+=(--force); fi
           python3 scripts/generate-matrix.py \
             --variants "${{ inputs.variants }}" \
-            --isa "${{ inputs.isa_levels }}"
+            --isa "${{ inputs.isa_levels }}" \
+            "${args[@]}"
 
   # ------------------------------------------------------------------
   # Arch: makepkg against CachyOS's own unmodified PKGBUILD inside an
@@ -71,6 +87,7 @@ jobs:
   build-arch:
     name: Arch ${{ matrix.variant }} ${{ matrix.isa }}
     needs: generate-matrix
+    if: needs.generate-matrix.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -157,6 +174,7 @@ jobs:
   build-kbuild:
     name: Kbuild ${{ matrix.variant }} ${{ matrix.isa }} (.deb+.rpm)
     needs: generate-matrix
+    if: needs.generate-matrix.outputs.changed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     strategy:
@@ -235,14 +253,15 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------
-  # Aggregate everything into one prerelease with a per-cell summary.
+  # Aggregate everything into one stable release with a per-cell summary.
   # RPMs are signed when GPG_PRIVATE_KEY/GPG_PASSPHRASE secrets exist;
-  # otherwise SHA256SUMS is the only integrity guarantee (see README).
+  # otherwise SHA256SUMS/MD5SUMS are the integrity guarantee (see README).
+  # Skipped entirely when the freshness gate found no upstream changes.
   # ------------------------------------------------------------------
   release:
     name: Aggregate release
     needs: [generate-matrix, build-arch, build-kbuild]
-    if: ${{ !cancelled() && contains(needs.*.result, 'success') }}
+    if: ${{ !cancelled() && needs.generate-matrix.outputs.changed == 'true' && contains(needs.*.result, 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -279,6 +298,22 @@ jobs:
             echo "::error::duplicate package basenames (ISA collision?): $dupes"
             exit 1
           fi
+
+      - name: Write versions.json manifest
+        # Feeds the NEXT run's freshness gate: variant -> exact source tag
+        # built here. Lands in out/ before the checksums so it is hashed
+        # and published like every other asset.
+        env:
+          MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix }}
+          KERNEL_VERSION: ${{ needs.generate-matrix.outputs.kernel_version }}
+        run: |
+          echo "$MATRIX_JSON" | jq \
+            --arg kv "$KERNEL_VERSION" \
+            --argjson run "${{ github.run_number }}" \
+            '{kernel_version: $kv, run: $run, variants: ([.include[] | {(.variant): .src_tag}] | add)}' \
+            > out/versions.json
+          test -s out/versions.json || { echo "::error::versions.json is empty" >&2; exit 1; }
+          cat out/versions.json
 
       - name: Sign RPMs when project key is configured
         env:
