@@ -96,6 +96,84 @@ Then reboot. Keep your stock kernel installed as a fallback boot entry.
 > *you* sign it and enroll your own key (mokutil/sbctl/pesign — your
 > choice; this project deliberately stays out of that).
 
+### Secure Boot with your own MOK (contrib example)
+
+`contrib/sign-kernel-mok.sh` is a worked example from a real Fedora 44 +
+Secure Boot + TPM2 (PCR 7) + LUKS setup: it generates a MOK (once),
+signs the installed `vmlinuz` (`sbsign`) plus every module (`sign-file`,
+handling `.ko.zst`/`.xz`/plain), runs `depmod`, and can audit (`--check`)
+or request enrollment (`--enroll`, confirmed in MOK Manager on next boot).
+It also detects your CPU's x86-64 level and refuses a kernel built above
+it. Fedora-focused; other distros are welcome to adapt it.
+
+```sh
+sudo bash contrib/sign-kernel-mok.sh --enroll 7.2.4-cachyos-bore-v2
+sudo systemctl reboot   # Enroll MOK in the blue screen
+```
+
+Two things it won't do for you: re-enroll TPM2-sealed LUKS (next
+subsection) and repeat the signing for every new weekly kernel you install
+(the MOK itself is reused — see "Updating" below).
+
+#### TPM2-sealed LUKS (PCR 7 survives kernels, not MOK changes)
+
+Enrolling a MOK appends to `MokList`, which Secure Boot measures into
+**PCR 7** — so a LUKS token sealed to PCR 7 stops matching and the next
+boot asks for your passphrase. This happens **once per MOK enrollment**,
+not per kernel: weekly kernel updates don't touch any PCR.
+
+1. Before enrolling, record the baseline and check how you're sealed:
+   ```sh
+   sudo tpm2_pcrread sha1:7,14 | tee ~/pcr-before.txt
+   sudo systemd-cryptenroll /dev/XXX        # look for slot `tpm2`
+   sudo cryptsetup luksDump /dev/XXX | grep -A3 systemd-tpm2  # tpm2-hash-pcrs / tpm2-pcr-bank
+   ```
+   Ours was PCRs `7`, bank `sha1`. **Match your existing bank** when
+   re-enrolling — newer systemd versions default to `sha256`, which would
+   silently change your policy. (`--tpm2-pcrs` syntax varies by version;
+   `7:sha1` worked on systemd 257/Fedora 44 — check
+   `man systemd-cryptenroll` if yours differs.)
+2. Enroll the MOK, reboot, type the passphrase if asked (expected, once).
+3. Compare: `diff <(cat ~/pcr-before.txt) <(sudo tpm2_pcrread sha1:7,14)`.
+   If PCR 7 changed, re-enroll each sealed disk:
+   ```sh
+   sudo systemd-cryptenroll --wipe-slot=tpm2 /dev/XXX
+   sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7:sha1 /dev/XXX
+   sudo systemd-cryptenroll /dev/XXX   # slot tpm2 must be back
+   ```
+4. The following boot should unlock automatically again. Keep a passphrase
+   slot forever — it's the recovery path whenever a PCR policy breaks
+   (firmware update, key enrollment, toggling Secure Boot).
+
+### Downloading without the `gh` CLI (contrib example)
+
+`contrib/fetch-kernel.sh` downloads a variant × ISA from the releases using
+only the public GitHub API + `curl` (no login needed). It autodetects your
+distro's format (`rpm`/`deb`/`arch`) and your CPU's x86-64 level, verifies
+SHA256 + MD5, and refuses an ISA above what your CPU executes:
+
+```sh
+bash contrib/fetch-kernel.sh cachyos-bore          # auto ISA + format
+bash contrib/fetch-kernel.sh --format deb cachyos-eevdf v3
+bash contrib/fetch-kernel.sh --list cachyos-lts v4  # only print URLs
+```
+
+### Updating to a new weekly kernel (same repo)
+
+Releases land weekly as stable `weekly-N`. MOK enrollment and TPM2
+sealing are one-time — per new version you only redo fetch + install +
+sign (the `sign-file` helper is per kernel version: re-extract it when the
+script's error hint asks):
+
+```sh
+bash contrib/fetch-kernel.sh cachyos-bore          # verified, right ISA
+cd cachyos-cachyos-bore-v2/
+sudo dnf install ./kernel-<ver>_...rpm             # kernel ONLY: -devel/-headers replace stock ones
+KVER=$(ls /lib/modules | grep cachyos | sort -V | tail -1); echo "$KVER"
+sudo bash /path/to/repo/contrib/sign-kernel-mok.sh "$KVER"
+sudo systemctl reboot  # pick it in GRUB; keep a stock entry as fallback
+```
+
 ---
 
 ## How it works
@@ -112,6 +190,9 @@ validate-patches.yml  PR gate: shellcheck + patch dry-runs per scheduler, no com
 
 - One matrix cell per enabled variant × ISA level; all three packaging
   jobs consume the same matrix, so all distros get identical sources.
+- Freshness gate runs first: resolved source tags are compared against
+  `versions.json` from the latest stable release; unchanged weeks skip
+  the builds (see "Running this pipeline yourself").
 - Source tarball is fetched by release tag (e.g. `cachyos-7.2.0-1`) and
   **GPG-verified against CachyOS's published keys** — verification fails
   hard by default.
@@ -139,6 +220,15 @@ cron run it:
 | `isa_levels` | comma-separated levels, e.g. `v2,v3` (blank = all) |
 | `build_lto` | Clang ThinLTO for deb/rpm cells (RAM-hungry link phase) |
 | `publish_repo` | publish RPMs as a browsable DNF repo on GitHub Pages |
+| `force_rebuild` | bypass the freshness gate (rebuild even if unchanged) |
+
+**Freshness gate:** before burning ~13h of builds, `generate-matrix`
+compares every enabled variant's live source tag against `versions.json`
+from the latest stable release (published as an asset by every run).
+No upstream movement → build/release jobs skip with a `SKIP` note in the
+run summary, and no empty release is created. Any moved variant (or a new
+one, or a missing/unreadable manifest) rebuilds the full matrix — fail
+open by design. Network cost of the check: 2 unauthenticated API calls.
 
 Cost facts: **the repo must be public** for the full matrix (68 kernel
 builds/week: 34 Arch cells + 34 merged kbuild cells) — private repos get only a few thousand free Actions
