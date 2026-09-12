@@ -69,7 +69,7 @@ All nine enabled upstream flavours are built by default
 | `cachyos-rt-bore` | BORE + PREEMPT_RT | main | low-latency/real-time |
 | `cachyos-lts` | pure EEVDF | **LTS (6.18.x)** | needs only v2 |
 | `cachyos-hardened` | BORE + hardening | **7.1.x** | its patches live on that series |
-| `cachyos-server` | EEVDF, lazy preemption | main | `CONFIG_CACHY` off, like upstream; needs only v2 |
+| `cachyos-server` | EEVDF, lazy preemption | main | `CONFIG_CACHY` off, 300 Hz tick, like upstream; needs only v2 |
 | `cachyos-deckify` | BORE | main | Steam Deck / handheld patches included |
 | `cachyos-rc` | pure EEVDF | current `-rcN` cycle | churns weekly by design |
 
@@ -265,6 +265,19 @@ minutes/month and one kernel compile takes 60–120 min. Per-job timeouts
 (350 min) sit under GitHub's hard 6-hour cap. First run after a change?
 Smoke-test one cell (`variants=cachyos-bore`, `isa_levels=v3`).
 
+### Toolchain floors (single reference)
+
+- Runners: `ubuntu-24.04`/`ubuntu-latest` + `archlinux:base-devel`
+  (rolling) for the makepkg cells.
+- Compilers: GCC >= 11 or Clang >= 12 for the v4 target
+  (`-march=x86-64-v4`); ThinLTO cells add clang/lld/llvm.
+- Python 3.x + **PyYAML 6.0.3 pinned** in all workflows (bump by editing
+  the three `pip install` lines together); Rust stable (rustup on Ubuntu,
+  distro packages on Fedora) for `CONFIG_RUST` + bindgen.
+- Lint gate: shellcheck (apt) + `bash -n` + `py_compile`.
+- GitHub Actions versions float on majors and are kept current by
+  Dependabot (`.github/dependabot.yml`, weekly).
+
 ### Package signing (maintainers)
 
 Create a **dedicated** GPG key (not your personal one), store it as repo
@@ -304,6 +317,17 @@ Checked against CachyOS's live repos/docs/APIs rather than assumed:
 - Already on Fedora? The maintained [COPR repo](https://github.com/CachyOS/copr-linux-cachyos)
   (x86-64-v3 floor, lts/server at v2) is the more polished option — this
   project adds v1/v2, Debian, and full-matrix automation on top.
+  Feature-wise both build the same CachyOS sources and configs, so the
+  patch/config features travel together: BORE + sched-ext, amd-pstate
+  enhancements, Cachy Sauce, ZSTD patchset, BFQ, BBRv3, Clear Linux picks,
+  linux-next backports, OpenRGB, ACS override, NTSync — and, like COPR's
+  server kernel, ours ticks at 300 Hz with lazy preemption. Differences
+  are packaging choices: COPR publishes GCC *and* ThinLTO flavors
+  side-by-side (here ThinLTO is a `build_lto` dispatch input, Arch builds
+  at each PKGBUILD's authentic default), and COPR bundles the out-of-tree
+  `v4l2loopback` module plus userland addons (cachyos-settings, scx-scheds,
+  ananicy-cpp) — none of that ships here; pair these kernels with
+  COPR-addons if you want it.
 
 ## Known limitations
 
