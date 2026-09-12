@@ -65,10 +65,10 @@ jobs:
       prev_release: ${{ steps.gen.outputs.prev_release }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
@@ -106,7 +106,7 @@ jobs:
       USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free runner disk space
         run: |
@@ -165,7 +165,7 @@ jobs:
 
       - name: Upload cell artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pkg-arch-${{ matrix.variant }}-${{ matrix.isa }}
           path: |
@@ -205,7 +205,7 @@ jobs:
       MARCH: ${{ matrix.march }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free runner disk space
         run: |
@@ -254,7 +254,7 @@ jobs:
 
       - name: Upload cell artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pkg-kbuild-${{ matrix.variant }}-${{ matrix.isa }}${{ matrix.suffix }}
           path: |
@@ -278,7 +278,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all cell artifacts
         uses: actions/download-artifact@v8
