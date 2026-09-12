@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Re-apply the same `scripts/config` toggles CachyOS's PKGBUILDs set in
+# their prepare() step, for the Debian/Fedora build paths that don't go
+# through makepkg. Starts from the actual per-variant `config` file
+# CachyOS ships next to each PKGBUILD so we're tuning the same base
+# config they do, not a generic defconfig.
+#
+# The prepare() config-toggle block is identical across every PKGBUILD
+# (verified Aug 2026), including its quirks - e.g. 'cachyos' maps to
+# `-e SCHED_BORE` even for variants that don't apply the BORE patch,
+# where olddefconfig silently drops the toggle. We reproduce that
+# behavior faithfully rather than second-guessing it.
+#
+# SOURCE OF TRUTH: any linux-cachyos*/PKGBUILD prepare().
+#
+# Usage: configure-kernel.sh <srcdir> <pkgbuild_dir> <scheduler> <isa_num 1-4>
+# Env:   CACHY_CONFIG=yes|no   (default yes; per-variant `_cachy_config`)
+#        PREEMPT_MODE=full|lazy (default full; rt schedulers ignore it)
+set -euo pipefail
+
+SRCDIR="${1:?}"; PKGBUILD_DIR="${2:?}"; SCHEDULER="${3:?}"; ISA_NUM="${4:?}"
+
+CONFIG_URL="https://raw.githubusercontent.com/CachyOS/linux-cachyos/master/${PKGBUILD_DIR}/config"
+echo "Fetching base config from ${CONFIG_URL} ..."
+curl -fL --retry 3 --retry-delay 5 "$CONFIG_URL" -o "${SRCDIR}/.config"
+if [[ ! -s "${SRCDIR}/.config" ]]; then
+  echo "error: downloaded base config is missing or empty (${CONFIG_URL})." >&2
+  exit 1
+fi
+
+cd "$SRCDIR"
+
+# Wrapper: ./scripts/config exits non-zero when a symbol was renamed or
+# removed upstream (e.g. HZ_300, TRANSPARENT_HUGEPAGE_*). Fail with the
+# toggle context instead of a bare `set -e` abort mid-prepare.
+cfg() {
+  if ! ./scripts/config "$@"; then
+    echo "error: './scripts/config $*' failed - symbol likely renamed/removed upstream." >&2
+    echo "Check the live ${PKGBUILD_DIR}/config and PKGBUILD prepare() for drift." >&2
+    exit 1
+  fi
+}
+
+# CachyOS config knob - mirrors each variant's `_cachy_config` default
+# (the server variant ships with it OFF upstream).
+case "${CACHY_CONFIG:-yes}" in
+  yes) cfg -e CACHY ;;
+  no)  cfg -d CACHY ;;
+  *) echo "unknown CACHY_CONFIG: ${CACHY_CONFIG:-}" >&2; exit 1 ;;
+esac
+echo "CONFIG_CACHY: ${CACHY_CONFIG:-yes}"
+
+# CPU scheduler - mirrors the `case "$_cpusched" in` block in prepare()
+case "$SCHEDULER" in
+  cachyos|bore|hardened) cfg -e SCHED_BORE ;;
+  bmq)                   cfg -e SCHED_ALT -e SCHED_BMQ ;;
+  eevdf)                 : ;;
+  rt)                    cfg -e PREEMPT_RT ;;
+  rt-bore)               cfg -e SCHED_BORE -e PREEMPT_RT ;;
+  *) echo "unknown scheduler: $SCHEDULER" >&2; exit 1 ;;
+esac
+echo "Selected ${SCHEDULER^^} scheduler."
+
+# ISA level - CONFIG_GENERIC_CPU + CONFIG_X86_64_VERSION is exactly
+# what `_processor_opt=generic_vN` sets in the PKGBUILD.
+cfg -e GENERIC_CPU -d MZEN4 -d X86_NATIVE_CPU \
+  --set-val X86_64_VERSION "$ISA_NUM"
+echo "Selected x86-64-v${ISA_NUM} (or generic, for v1)."
+
+# Tick rate: default to CachyOS's own default (1000Hz). Change here
+# if you want a different fixed rate across the whole matrix.
+cfg -d HZ_300 -e HZ_1000 --set-val HZ 1000
+
+# Preemption model - mirrors each variant's `_preempt` default (server
+# ships LAZY upstream). Skipped entirely for rt schedulers, exactly like
+# the PKGBUILD does - PREEMPT_RT implies its own preemption model.
+case "$SCHEDULER" in
+  rt|rt-bore) : ;;
+  *)
+    case "${PREEMPT_MODE:-full}" in
+      full) cfg -e PREEMPT -d PREEMPT_LAZY ;;
+      lazy) cfg -d PREEMPT -e PREEMPT_LAZY ;;
+      *) echo "unknown PREEMPT_MODE: ${PREEMPT_MODE:-}" >&2; exit 1 ;;
+    esac
+    echo "Preemption: ${PREEMPT_MODE:-full}"
+    ;;
+esac
+
+# Transparent hugepages: "always", matching CachyOS's default.
+cfg -d TRANSPARENT_HUGEPAGE_MADVISE -e TRANSPARENT_HUGEPAGE_ALWAYS
+
+# Link-time optimization - mirrors the `case "$_use_llvm_lto" in` block
+# in the PKGBUILD's prepare() (verified Aug 2026). Requires the LLVM
+# toolchain: the cell wrappers export LLVM=1 to make when USE_LTO is
+# set, and must have clang/lld/llvm installed. Note AutoFDO/Propeller
+# (upstream's other PGO layers) can NOT be replicated in CI at all -
+# they need perf profiles collected from real workloads, which only
+# exists on upstream's own build infra.
+case "${USE_LTO:-none}" in
+  thin)      cfg -e LTO_CLANG_THIN ;;
+  thin-dist) cfg -e LTO_CLANG_THIN_DIST ;;
+  full)      cfg -e LTO_CLANG_FULL ;;
+  none)      cfg -e LTO_NONE ;;
+  *) echo "unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
+esac
+echo "Selected LTO mode: ${USE_LTO:-none}."
+
+# CI builds: trade -O3 for smaller/faster-to-build debug info, same
+# as the PKGBUILD does when it detects $CI/$GITHUB_RUN_ID.
+cfg \
+  -d CC_OPTIMIZE_FOR_PERFORMANCE_O3 \
+  -e CC_OPTIMIZE_FOR_SIZE \
+  -d DEBUG_KERNEL \
+  -e DEBUG_INFO_REDUCED
+
+echo "Resolving dependent config options (olddefconfig) ..."
+make olddefconfig >/dev/null
+
+echo "Kernel config ready: $(make -s kernelrelease 2>/dev/null || echo unknown)"

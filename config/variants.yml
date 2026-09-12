@@ -1,0 +1,145 @@
+# config/variants.yml
+#
+# One entry per kernel flavour. Every field below is VERIFIED against
+# that folder's live PKGBUILD in https://github.com/CachyOS/linux-cachyos
+# (Aug 2026) - this file is deliberately data-driven so the pipeline can
+# reproduce each variant faithfully without hardcoding anything per-name
+# in scripts:
+#
+#   pkgbuild_dir   folder in the upstream monorepo (must exist!)
+#   scheduler      the PKGBUILD's default `_cpusched` value; feeds the
+#                  prepare()-style config toggles replicated by
+#                  scripts/configure-kernel.sh
+#   patches        EXACT list of kernel-patches files that variant's
+#                  source=() array adds for its default _cpusched.
+#                  IMPORTANT: upstream's patch-application case block is
+#                  PER-PKGBUILD, not global - e.g. the flagship applies
+#                  NO BORE patch for its own 'cachyos' default (its
+#                  shipped kernels are pure EEVDF; the `-e SCHED_BORE`
+#                  line in their prepare() is a silent no-op there),
+#                  while deckify DOES apply the BORE patch for its
+#                  'cachyos' default. Never assume; copy what the
+#                  folder actually does.
+#   src_tag        auto-resolved per variant from that folder's live
+#                  PKGBUILD (_major/_minor/_tagrel, or _rcver for -rc
+#                  series). Several variants track their OWN series:
+#                  linux-cachyos-lts -> 6.18.x, linux-cachyos-hardened
+#                  -> 7.1.x, linux-cachyos-rc -> cachyos-X.Y-rcN-R.
+#   cachy_config   mirrors `_cachy_config` (server ships with it OFF)
+#   preempt        mirrors `_preempt` (server defaults to lazy); always
+#                  ignored for rt/rt-bore schedulers, like upstream
+#   min_isa        optional x86-64 level floor (COPR docs: everything
+#                  needs v3 except lts/server, which need only v2)
+#
+# We never vendor CachyOS's kernel source or patches here - every run
+# downloads them fresh from CachyOS's repos. This file only declares
+# WHAT to build; scripts/generate-matrix.py turns it into cells.
+
+source_repo: https://github.com/CachyOS/linux-cachyos.git
+source_branch: master
+
+variants:
+  # --- flagship -------------------------------------------------------
+  - id: cachyos
+    pkgbuild_dir: linux-cachyos
+    scheduler: cachyos
+    patches: []
+    description: >-
+      Flagship kernel, currently Linux 7.2.0. Pure EEVDF upstream (its
+      PKGBUILD applies no scheduler patches for the 'cachyos' default);
+      Clang ThinLTO/AutoFDO remain makepkg-side only.
+    enabled: true
+
+  # --- scheduler-focused ----------------------------------------------
+  - id: cachyos-bore
+    pkgbuild_dir: linux-cachyos-bore
+    scheduler: bore
+    patches: ["sched/0001-bore-cachy.patch"]
+    description: "BORE (Burst-Oriented Response Enhancer) on the main series."
+    enabled: true
+
+  - id: cachyos-eevdf
+    pkgbuild_dir: linux-cachyos-eevdf
+    scheduler: eevdf
+    patches: []
+    description: "Plain EEVDF, explicitly named variant."
+    enabled: true
+
+  - id: cachyos-bmq
+    pkgbuild_dir: linux-cachyos-bmq
+    scheduler: bmq
+    patches: ["sched/0001-prjc-cachy.patch"]
+    description: "Project C's BMQ scheduler (SCHED_ALT/SCHED_BMQ). No sched-ext."
+    # DISABLED 2026-09-12: sched/0001-prjc-cachy.patch (7.2 series) stopped
+    # applying on cachyos-7.2.4-1 (Hunk #27 in kernel/sched/fair.c
+    # rejected) - upstream drift, CachyOS's own PKGBUILD fails identically.
+    # Re-enable (enabled: true) once the 7.2 prjc patch applies cleanly
+    # against the folder's live source tag again.
+    enabled: false
+
+  # --- real-time --------------------------------------------------------
+  - id: cachyos-rt-bore
+    pkgbuild_dir: linux-cachyos-rt-bore
+    scheduler: rt-bore
+    patches: ["sched/0001-bore-cachy.patch", "misc/0001-rt-i915.patch"]
+    description: "PREEMPT_RT + BORE on the main series."
+    enabled: true
+
+  # --- series forks (each tracks its own base!) --------------------------
+  - id: cachyos-lts
+    pkgbuild_dir: linux-cachyos-lts
+    scheduler: cachyos
+    patches: []
+    description: >-
+      Long-term-support series, currently 6.18.x - pure EEVDF like the
+      flagship (no scheduler patches applied for 'cachyos' here either).
+    min_isa: v2
+    enabled: true
+
+  - id: cachyos-hardened
+    pkgbuild_dir: linux-cachyos-hardened
+    scheduler: hardened
+    patches: ["sched/0001-bore-cachy.patch", "misc/0001-hardened.patch"]
+    description: >-
+      Hardened config + hardening patches over BORE. Tracks its own
+      series (currently 7.1.x, where its patches live - the hardened
+      patch does not exist on 7.2 yet).
+    enabled: true
+
+  - id: cachyos-server
+    pkgbuild_dir: linux-cachyos-server
+    scheduler: eevdf
+    patches: []
+    cachy_config: false
+    preempt: lazy
+    description: >-
+      Server tuning: EEVDF with LAZY preemption and _cachy_config OFF,
+      straight from its PKGBUILD defaults.
+    min_isa: v2
+    enabled: true
+
+  # --- hardware-targeted --------------------------------------------------
+  - id: cachyos-deckify
+    pkgbuild_dir: linux-cachyos-deckify
+    scheduler: cachyos
+    patches:
+      - "sched/0001-bore-cachy.patch"
+      - "misc/0001-acpi-call.patch"
+      - "misc/0001-handheld.patch"
+    description: >-
+      Handheld gaming build (Steam Deck support, MSI Claw HID). Unlike
+      the flagship, its PKGBUILD DOES apply the BORE patch for the
+      'cachyos' scheduler, plus two unconditional misc patches.
+    enabled: true
+
+  # --- release candidates ---------------------------------------------------
+  - id: cachyos-rc
+    pkgbuild_dir: linux-cachyos-rc
+    scheduler: cachyos
+    patches: []
+    description: >-
+      Release-candidate tracking build (tag shape cachyos-X.Y-rcN-R,
+      resolved from its PKGBUILD's _rcver). Pure EEVDF like the
+      flagship. Expect churn: an RC series disappears when the stable
+      X.Y.Z.0 lands and the folder rebases onto the next cycle.
+    enabled: true

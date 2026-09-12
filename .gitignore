@@ -1,0 +1,13 @@
+# Local build/test residue
+__pycache__/
+ccache/
+kernel-src/
+out/
+cell-status/
+cells/
+repo-out/
+result/
+*.tar.gz
+*.tar.gz.asc
+release-notes.md
+SHA256SUMS

@@ -1,0 +1,225 @@
+name: Validate variants & scripts
+
+# PR-time gate: cheap checks only, no kernel compile.
+#   - lint: bash syntax + shellcheck + python compile + YAML sanity
+#   - variant dry-run: for EVERY enabled variant, resolve its own
+#     source series tag (variants track different series!), fetch that
+#     tarball once per tag (cached across matrix cells), then verify
+#     the variant's declared patch series applies cleanly and its
+#     config replication still resolves (olddefconfig smoke test).
+#
+# This catches upstream patch rebases, folder removals and PKGBUILD
+# drift BEFORE the weekly matrix burns hours of compute.
+
+on:
+  push:
+    branches: [staging]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint scripts & configs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: |
+          set -e
+          for f in scripts/*.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck -x scripts/*.sh
+
+      - name: Python compile check
+        run: python3 -m py_compile scripts/generate-matrix.py
+
+      - name: Config YAML sanity + cross-check against live PKGBUILDs
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import importlib.util
+          import yaml
+
+          spec = importlib.util.spec_from_file_location(
+              "generate_matrix", "scripts/generate-matrix.py")
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          cfg = mod.load("variants.yml")
+          dirs = [v["pkgbuild_dir"] for v in cfg["variants"]]
+          assert len(dirs) == len(set(dirs)), "duplicate pkgbuild_dir"
+          ids = [v["id"] for v in cfg["variants"]]
+          assert len(ids) == len(set(ids)), "duplicate variant id"
+          valid_sched = {"cachyos", "bore", "eevdf", "bmq", "hardened",
+                         "rt", "rt-bore"}
+          for v in cfg["variants"]:
+              assert v.get("pkgbuild_dir"), f"{v.get('id')}: missing pkgbuild_dir"
+              assert v.get("scheduler") in valid_sched, \
+                  f"{v.get('id')}: unknown scheduler {v.get('scheduler')!r}"
+              for p in v.get("patches", []):
+                  assert isinstance(p, str) and p and " " not in p, \
+                      f"{v.get('id')}: bad patch entry {p!r}"
+              assert isinstance(v.get("patches", []), list), \
+                  f"{v.get('id')}: patches must be a list"
+          print(f"{len(cfg['variants'])} variants declared; folders unique")
+          PY
+
+  resolve-variants:
+    name: Resolve variants under test
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.out.outputs.variants }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Resolve per-variant tags and patch lists
+        id: out
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import importlib.util
+          import json
+          import sys
+          import time
+
+          spec = importlib.util.spec_from_file_location(
+              "generate_matrix", "scripts/generate-matrix.py")
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          cfg = mod.load("variants.yml")
+          include = []
+          seen_ids = set()
+          for v in cfg["variants"]:
+              if not v.get("enabled"):
+                  continue
+              if v["id"] in seen_ids:
+                  continue
+              seen_ids.add(v["id"])
+              # One transient 429/timeout must not kill the whole gate.
+              src_tag = None
+              last_err = None
+              for attempt in range(3):
+                  try:
+                      _, src_tag = mod.resolve_kernel_version(v["pkgbuild_dir"])
+                      break
+                  except Exception as exc:  # noqa: BLE001 - retry, then fail loudly
+                      last_err = exc
+                      time.sleep(5 * (attempt + 1))
+              if src_tag is None:
+                  print(f"ERROR resolving tag for {v['pkgbuild_dir']}: {last_err}",
+                        file=sys.stderr)
+                  sys.exit(1)
+              include.append({
+                  "variant": v["id"],
+                  "pkgbuild_dir": v["pkgbuild_dir"],
+                  "scheduler": v["scheduler"],
+                  "patches": " ".join(v.get("patches", [])),
+                  "src_tag": src_tag,
+                  "cachy_config": "yes" if v.get("cachy_config", True) else "no",
+                  "preempt": v.get("preempt", "full"),
+              })
+              print(f"{v['id']}: {src_tag} ({len(v.get('patches', []))} extra patches)",
+                    file=sys.stderr)
+          print("variants=" + json.dumps({"include": include}))
+          PY
+
+  variant-dry-run:
+    name: Dry-run ${{ matrix.variant }} (${{ matrix.src_tag }})
+    needs: resolve-variants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-variants.outputs.variants) }}
+    env:
+      SRC_TAG: ${{ matrix.src_tag }}
+      EXTRA_PATCHES: ${{ matrix.patches }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache CachyOS source tarballs by tag
+        uses: actions/cache@v4
+        with:
+          path: tarball-cache
+          key: tarball-${{ matrix.src_tag }}
+
+      - name: Download source (shared cache across cells)
+        run: |
+          mkdir -p tarball-cache kernel-src
+          # fetch-cachyos-source.sh writes into CWD; run it inside the
+          # cache dir so sibling cells can reuse the same tarball.
+          cd tarball-cache
+          if [ ! -f "${SRC_TAG}.tar.gz" ]; then
+            bash "$GITHUB_WORKSPACE/scripts/fetch-cachyos-source.sh" "$SRC_TAG"
+          else
+            echo "tarball for $SRC_TAG already cached"
+          fi
+          cd ..
+          tar -xf "tarball-cache/${SRC_TAG}.tar.gz" -C kernel-src
+
+      - name: Patch dry-run + config smoke test
+        env:
+          DRY_RUN: "1"
+          PKGBUILD_DIR: ${{ matrix.pkgbuild_dir }}
+          SCHEDULER: ${{ matrix.scheduler }}
+          CACHY_CONFIG: ${{ matrix.cachy_config }}
+          PREEMPT_MODE: ${{ matrix.preempt }}
+        run: |
+          set -euo pipefail
+          SRCDIR="$(find kernel-src -maxdepth 1 -mindepth 1 -type d -name 'cachyos-*' -print -quit)"
+          SRCDIR="${SRCDIR#./}"
+          if [[ -z "${SRCDIR:-}" ]]; then
+            echo "error: no cachyos-* tree extracted under kernel-src." >&2
+            exit 1
+          fi
+          # Derive major.minor for the kernel-patches series path from the
+          # directory BASENAME (find returns kernel-src/cachyos-...).
+          # Handles both stable (cachyos-7.2.0-1 -> 7.2) and RC
+          # (cachyos-7.2-rc7-1 -> 7.2, NOT 7) tag shapes.
+          SRCBASE="$(basename "$SRCDIR")"
+          base="${SRCBASE#cachyos-}"       # e.g. 7.2.0-1 / 7.2-rc7-1 / 6.18.42-1
+          base="${base%%-*}"              # e.g. 7.2.0 / 7.2 / 6.18.42
+          if [[ "$SRCBASE" == *"-rc"* ]]; then
+            MAJOR_MINOR="${base%.*}"      # rc: 7.2 stays 7.2
+            # rc base has only major.minor already (7.2); keep as-is
+            if [[ "$base" == *.*.* ]]; then
+              MAJOR_MINOR="${base%.*}"
+            else
+              MAJOR_MINOR="$base"
+            fi
+          else
+            MAJOR_MINOR="${base%.*}"      # stable: 7.2.0 -> 7.2
+          fi
+          case "$MAJOR_MINOR" in
+            [0-9]*.[0-9]*) : ;;
+            *) echo "could not derive major.minor from '${SRCDIR}' (base='${base}')" >&2; exit 1 ;;
+          esac
+          echo "series: ${MAJOR_MINOR} (from ${SRCDIR})"
+          # shellcheck disable=SC2086
+          bash scripts/apply-patches.sh "$SRCDIR" "$MAJOR_MINOR" ${EXTRA_PATCHES:-}
+          echo "--- config smoke test (all 4 ISA levels) ---"
+          for isa in 1 2 3 4; do
+            echo "== ISA v${isa} =="
+            bash scripts/configure-kernel.sh "$SRCDIR" "$PKGBUILD_DIR" "$SCHEDULER" "$isa"
+          done

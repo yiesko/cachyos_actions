@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Package one already-configured kernel tree as a .deb, using
+# kbuild's own bindeb-pkg target (ships in every kernel source tree -
+# no separate debian/ packaging directory to maintain by hand). This
+# is the honest reality of Debian/Ubuntu here: CachyOS doesn't
+# publish .debs themselves, so this is us building straight from the
+# same patched+configured source the Arch job uses, via Debian's own
+# native kernel-packaging path rather than trying to repackage an
+# Arch build artifact (which would fight both toolchains' conventions
+# for module locations, initramfs hooks, postinst scripts, etc).
+#
+# Expects configure-kernel.sh to have already run against $SRCDIR.
+#
+# Required env: VARIANT, SCHEDULER, MARCH, ISA, SRCDIR
+set -euo pipefail
+
+: "${VARIANT:?}"; : "${SCHEDULER:?}"; : "${MARCH:?}"; : "${ISA:?}"; : "${SRCDIR:?}"
+: "${GITHUB_WORKSPACE:?}"
+
+cd "$SRCDIR"
+
+KVER="$(make -s kernelversion)"
+export LOCALVERSION="-${VARIANT}-${ISA}"
+export KDEB_PKGVERSION="${KVER}${LOCALVERSION}-1"
+export KCFLAGS="-march=${MARCH}"
+export KCPPFLAGS="-march=${MARCH}"
+export KBUILD_BUILD_HOST="cachyos-ci"
+export KBUILD_BUILD_USER="${VARIANT}"
+
+# USE_LTO=thin|thin-dist|full -> build with the LLVM toolchain so the
+# LTO_CLANG_* config options selected by configure-kernel.sh actually
+# apply (kbuild needs clang/lld, not just the .config bits).
+MAKE_ARGS=(-j"$(nproc)")
+if [[ "${USE_LTO:-none}" != "none" ]]; then
+  MAKE_ARGS+=(LLVM=1)
+fi
+
+echo "Building .deb for ${VARIANT} (${ISA}, ${MARCH}), kernel ${KVER}, lto=${USE_LTO:-none} ..."
+make "${MAKE_ARGS[@]}" bindeb-pkg
+
+mkdir -p "${GITHUB_WORKSPACE}/out"
+# bindeb-pkg drops the .deb files one directory above the source tree
+# (older kbuild) or inside it. Collect deterministically with nullglob
+# so a no-match expands to nothing instead of the literal "*.deb",
+# and fail loudly when nothing was produced.
+shopt -s nullglob
+deb_candidates=(../*.deb ./*.deb)
+shopt -u nullglob
+if (( ${#deb_candidates[@]} == 0 )); then
+  echo "error: bindeb-pkg produced no .deb files (checked ../*.deb and ./*.deb from ${SRCDIR})." >&2
+  exit 1
+fi
+mv -v "${deb_candidates[@]}" "${GITHUB_WORKSPACE}/out/"
+
+shopt -s nullglob
+staged=("${GITHUB_WORKSPACE}"/out/*.deb)
+shopt -u nullglob
+if (( ${#staged[@]} == 0 )); then
+  echo "error: no .deb files staged in ${GITHUB_WORKSPACE}/out after bindeb-pkg." >&2
+  exit 1
+fi
+echo "package-deb: staged ${#staged[@]} .deb file(s)."

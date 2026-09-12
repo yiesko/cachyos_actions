@@ -1,0 +1,427 @@
+name: Weekly kernel matrix (Arch / Debian / Fedora)
+
+# Builds every enabled variant x ISA level (see config/*.yml) through
+# three packaging paths and aggregates everything into one stable release.
+#
+# Cost facts (GitHub Actions, 2026):
+#   - PUBLIC repos get unlimited Linux minutes -> this matrix is sized
+#     for that (~38 Arch cells + ~38 merged kbuild cells per week).
+#   - PRIVATE repos only get a few thousand free minutes per month;
+#     a single kernel compile is 60-120+ minutes, so running the full
+#     matrix privately will burn the quota in one run.
+#   - Each job's timeout (350 min) sits under GitHub's hard 6h/job cap.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: "Comma-separated variant ids (blank = all enabled)"
+        type: string
+        default: ""
+      isa_levels:
+        description: "Comma-separated ISA ids, e.g. v2,v3 (blank = all)"
+        type: string
+        default: ""
+      build_lto:
+        description: "Build with Clang ThinLTO (slower, memory-hungry)"
+        type: boolean
+        default: false
+      publish_repo:
+        description: "Publish RPMs as a DNF repo on GitHub Pages"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  generate-matrix:
+    name: Generate build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      kernel_version: ${{ steps.gen.outputs.kernel_version }}
+      src_tag: ${{ steps.gen.outputs.src_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Resolve variant x ISA matrix + current CachyOS version
+        id: gen
+        run: |
+          python3 scripts/generate-matrix.py \
+            --variants "${{ inputs.variants }}" \
+            --isa "${{ inputs.isa_levels }}"
+
+  # ------------------------------------------------------------------
+  # Arch: makepkg against CachyOS's own unmodified PKGBUILD inside an
+  # archlinux container (makepkg/pacman don't exist on ubuntu runners,
+  # and makepkg refuses root - scripts/run-arch-build.sh handles that).
+  # ------------------------------------------------------------------
+  build-arch:
+    name: Arch ${{ matrix.variant }} ${{ matrix.isa }}
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+    env:
+      USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Restore ccache (arch)
+        uses: actions/cache@v4
+        with:
+          path: ccache
+            # NOTE: src_tag in the key avoids reusing a stale cache across
+            # weekly version bumps (e.g. 7.2.3 -> 7.2.4) or LTO flips.
+          key: ccache-arch-${{ matrix.variant }}-${{ matrix.isa }}-${{ matrix.src_tag }}-${{ inputs.build_lto }}
+          restore-keys: |
+            ccache-arch-${{ matrix.variant }}-${{ matrix.isa }}-
+            ccache-arch-
+
+      - name: Build in archlinux container (makepkg)
+        id: build
+        run: |
+          docker run --rm \
+            -e VARIANT="${{ matrix.variant }}" \
+            -e PKGBUILD_DIR="${{ matrix.pkgbuild_dir }}" \
+            -e SCHEDULER="${{ matrix.scheduler }}" \
+            -e ISA_NUM="${{ matrix.isa_num }}" \
+            -e MARCH="${{ matrix.march }}" \
+            -e PKG_SUFFIX="${{ matrix.pkg_suffix }}" \
+            -e USE_LTO \
+            -e CACHY_CONFIG="${{ matrix.cachy_config }}" \
+            -e PREEMPT_MODE="${{ matrix.preempt }}" \
+            -e EXTRA_PATCHES="${{ matrix.patches }}" \
+            -e CCACHE_DIR=/ccache \
+            -e SRC_TAG="${{ matrix.src_tag }}" \
+            -v "$GITHUB_WORKSPACE":/work \
+            -w /work \
+            -v "$GITHUB_WORKSPACE/ccache":/ccache \
+            archlinux:base-devel \
+            bash scripts/run-arch-build.sh
+
+      - name: Record cell status
+        if: always()
+        run: |
+          # Containers may leave the workspace owned by their internal
+          # user (makepkg's builder uid); reclaim it for the host steps.
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+          mkdir -p cell-status
+          result="${{ steps.build.outcome }}"
+          case "$result" in
+            success) echo ok > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-arch.txt" ;;
+            *)       echo "fail:$result" > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-arch.txt" ;;
+          esac
+
+      - name: Upload cell artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-arch-${{ matrix.variant }}-${{ matrix.isa }}
+          path: |
+            out/
+            cell-status/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # Debian + Fedora: ONE compiled tree, two fast packaging passes.
+  # bindeb-pkg/binrpm-pkg only package an already-built tree, so doing
+  # them back-to-back costs a single full compile instead of two.
+  # Ubuntu's rpmbuild (apt 'rpm') handles the kernel's generated spec.
+  # ------------------------------------------------------------------
+  build-kbuild:
+    name: Kbuild ${{ matrix.variant }} ${{ matrix.isa }} (.deb+.rpm)
+    needs: generate-matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix) }}
+    env:
+      SRC_TAG: ${{ matrix.src_tag }}
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
+      CACHY_CONFIG: ${{ matrix.cachy_config }}
+      PREEMPT_MODE: ${{ matrix.preempt }}
+      EXTRA_PATCHES: ${{ matrix.patches }}
+      VARIANT: ${{ matrix.variant }}
+      PKGBUILD_DIR: ${{ matrix.pkgbuild_dir }}
+      SCHEDULER: ${{ matrix.scheduler }}
+      ISA_NUM: ${{ matrix.isa_num }}
+      MARCH: ${{ matrix.march }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Restore ccache (kbuild)
+        uses: actions/cache@v4
+        with:
+          path: ccache
+          # src_tag + build_lto in the key: a cache from 7.2.3 must never
+          # poison a 7.2.4 build (or a ThinLTO one).
+          key: ccache-kbuild-${{ matrix.variant }}-${{ matrix.isa }}-${{ matrix.src_tag }}-${{ inputs.build_lto }}
+          restore-keys: |
+            ccache-kbuild-${{ matrix.variant }}-${{ matrix.isa }}-
+            ccache-kbuild-
+
+      - name: Cache rustup/cargo toolchain (bindgen)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            ~/.rustup
+          key: rust-toolchain-stable-v1
+
+      - name: Build .deb + .rpm from one compile
+        id: build
+        run: bash scripts/run-kbuild-build.sh
+
+      - name: Record cell status
+        if: always()
+        run: |
+          # Containers may leave the workspace owned by their internal
+          # user (makepkg's builder uid); reclaim it for the host steps.
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+          mkdir -p cell-status
+          result="${{ steps.build.outcome }}"
+          case "$result" in
+            success) echo ok > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild.txt" ;;
+            *)       echo "fail:$result" > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild.txt" ;;
+          esac
+
+      - name: Upload cell artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-kbuild-${{ matrix.variant }}-${{ matrix.isa }}
+          path: |
+            out/
+            cell-status/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # Aggregate everything into one prerelease with a per-cell summary.
+  # RPMs are signed when GPG_PRIVATE_KEY/GPG_PASSPHRASE secrets exist;
+  # otherwise SHA256SUMS is the only integrity guarantee (see README).
+  # ------------------------------------------------------------------
+  release:
+    name: Aggregate release
+    needs: [generate-matrix, build-arch, build-kbuild]
+    if: ${{ !cancelled() && contains(needs.*.result, 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all cell artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: cells
+          merge-multiple: true
+
+      - name: Organize packages and statuses
+        run: |
+          mkdir -p out
+          find cells -type f \( -name '*.rpm' -o -name '*.deb' \
+             -o -name '*.pkg.tar.zst' -o -name '*.pkg.tar.zst.sig' \) \
+             -exec mv -v {} out/ \;
+          find cells -type f \( -name '*-arch.txt' -o -name '*-kbuild.txt' \) -exec mv -v {} ./ \;
+          # Never publish an empty release: every format needs artifacts,
+          # and duplicate basenames mean an ISA-suffix regression.
+          shopt -s nullglob
+          pkgs=(out/*.rpm out/*.deb out/*.pkg.tar.zst)
+          shopt -u nullglob
+          echo "staged ${#pkgs[@]} package file(s)"
+          if (( ${#pkgs[@]} == 0 )); then
+            echo "::error::no packages staged - refusing to create an empty release"
+            exit 1
+          fi
+          dupes="$(printf '%s\n' "${pkgs[@]##*/}" | sort | uniq -d || true)"
+          if [[ -n "$dupes" ]]; then
+            echo "::error::duplicate package basenames (ISA collision?): $dupes"
+            exit 1
+          fi
+
+      - name: Sign RPMs when project key is configured
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: bash scripts/sign-rpm.sh out
+
+      - name: Generate SHA256SUMS
+        working-directory: out
+        # NOTE: block scalar (|), NOT a backslash continuation: YAML
+        # folding turns `\`+newline into `\`+space, which made find see
+        # `-print0 ` as a path ("paths must precede expression") while
+        # the pipeline masked the failure and shipped a bogus SHA256SUMS.
+        run: |
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+          test -s SHA256SUMS || { echo "::error::SHA256SUMS is empty" >&2; exit 1; }
+          cat SHA256SUMS
+
+      - name: Build per-cell summary
+        env:
+          MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix }}
+          KERNEL_VERSION: ${{ needs.generate-matrix.outputs.kernel_version }}
+        run: |
+          {
+            echo "## CachyOS kernels ${KERNEL_VERSION} - weekly-${{ github.run_number }}"
+            echo
+            echo "| Variant | ISA | Arch | Kbuild (.deb/.rpm) |"
+            echo "|---|---|---|---|"
+            echo "$MATRIX_JSON" | jq -r '.include[] | [.variant, .isa] | @tsv' |
+            while IFS=$'\t' read -r v isa; do
+              row="| ${v} | ${isa} |"
+              for fmt in arch kbuild; do
+                f="./${v}-${isa}-${fmt}.txt"
+                if [[ -f "$f" ]]; then
+                  s="$(cat "$f")"
+                  [[ "$s" == ok ]] && row+=" :white_check_mark:" || row+=" :x: (\`${s#fail:}\`)"
+                else
+                  row+=" :grey_question:"
+                fi
+              done
+              echo "$row |"
+            done
+            echo
+            echo "Install at your own risk. Kernels/modules ship unsigned;" \
+                 "Secure Boot users must handle signing themselves (see README)."
+          } > release-notes.md
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create prerelease with all artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="weekly-${{ github.run_number }}"
+          shopt -s nullglob
+          files=(out/*)
+          gh release create "$tag" \
+            --title "CachyOS kernels ${{ needs.generate-matrix.outputs.kernel_version }} ($tag)" \
+            --notes-file release-notes.md \
+            --target "${{ github.sha }}" \
+            "${files[@]}"
+
+  # ------------------------------------------------------------------
+  # Optional (workflow_dispatch only): turn the RPMs into a browsable
+  # DNF repository published via GitHub Pages. Signs repo metadata when
+  # the project GPG key secret is configured.
+  # ------------------------------------------------------------------
+  publish-dnf-repo:
+    name: Publish DNF repo (Pages)
+    needs: [generate-matrix, build-kbuild]
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          && inputs.publish_repo == true
+          && needs.build-kbuild.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+    steps:
+      - name: Download generated RPMs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-kbuild-*
+          path: cells
+          merge-multiple: true
+
+      - name: Collect RPMs only
+        run: |
+          mkdir -p repo-out
+          find cells -type f -name '*.rpm' -exec cp -v {} repo-out/ \;
+          ls -lh repo-out
+
+      - name: Generate repository metadata (createrepo_c)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq createrepo-c
+          createrepo_c repo-out
+
+      - name: Sign repository metadata (optional, requires Secrets)
+        if: ${{ env.HAS_GPG_KEY == 'true' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          export GNUPGHOME="$(mktemp -d)"
+          chmod 700 "$GNUPGHOME"
+          gpg --batch --import <<< "$GPG_PRIVATE_KEY"
+          keyid="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')"
+          gpg --batch --yes --pinentry-mode loopback \
+              ${GPG_PASSPHRASE:+--passphrase "$GPG_PASSPHRASE"} \
+              --detach-sign repo-out/repodata/repomd.xml
+          gpg --armor --export "$keyid" > repo-out/RPM-GPG-KEY-cachyos-ci.asc
+
+      - name: Generate consumer .repo file
+        env:
+          BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        run: |
+          if [[ "$HAS_GPG_KEY" == "true" ]]; then
+            gpg_lines=$'gpgcheck=1\nrepo_gpgcheck=1\ngpgkey='"$BASE_URL"'/RPM-GPG-KEY-cachyos-ci.asc'
+          else
+            gpg_lines=$'# No project key configured: verification disabled.\ngpgcheck=0\nrepo_gpgcheck=0'
+          fi
+          {
+            echo "[cachyos-ci]"
+            echo "name=CachyOS CI kernels (weekly builds, unsupported)"
+            echo "baseurl=${BASE_URL}"
+            echo "enabled=1"
+            echo "$gpg_lines"
+          } > repo-out/cachyos-ci.repo
+          cat repo-out/cachyos-ci.repo
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: repo-out
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

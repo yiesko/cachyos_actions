@@ -1,0 +1,81 @@
+# config/isa-levels.yml
+#
+# x86-64 micro-architecture levels, per the x86-64 psABI. All four are
+# wired up because CachyOS's own PKGBUILD already supports all four
+# through one build variable:
+#
+#   _processor_opt=generic_v1 | generic_v2 | generic_v3 | generic_v4
+#
+# VERIFIED FACTS - where those Kconfig knobs actually come from
+# (checked against mainline and CachyOS's tree, Aug 2026):
+#
+# The PKGBUILD maps generic_vN to:
+#   scripts/config -e GENERIC_CPU -d MZEN4 -d X86_NATIVE_CPU \
+#     --set-val X86_64_VERSION N
+#
+# IMPORTANT: CONFIG_GENERIC_CPU + CONFIG_X86_64_VERSION are NOT upstream
+# mainline options. Mainline arch/x86/Kconfig.cpu only gained
+# CONFIG_X86_NATIVE_CPU ("optimize for the compiling host"), and an
+# older mainline era (~6.12) had just a plain boolean CONFIG_GENERIC_CPU
+# with no version knob. The int-valued X86_64_VERSION selection comes
+# from CachyOS's own patch - "arch/x86: Add x86_64 ISA and Zen4 compiler
+# optimizations", commit 5d840dcf15f6 on their 'cachy' branch - which is
+# included in every cachyos-* release tarball we build from.
+#
+# Consequence: selecting v2/v3/v4 via these knobs works ONLY because
+# this pipeline builds CachyOS-patched sources. Don't expect the same
+# scripts/config lines to do anything useful against vanilla kernel.org
+# sources.
+#
+# GROUNDING NOTE (checked against CachyOS's docs/repos, Aug 2026):
+# CachyOS's own *prebuilt package repos* publish x86-64 (generic -
+# KERNELS ONLY, not a full package set), x86-64-v3, x86-64-v4 and a
+# znver4 tier. There is no official "cachyos-v2" repo anywhere.
+# v2 is still fully valid to build yourself (this is what "isa: v2"
+# below does); it just won't match any existing upstream repo name to
+# diff against - it's a build target only this CI produces.
+#
+# A second real note: compiling *for* a higher ISA level than the CI
+# runner's own CPU is completely fine - it's a cross-target compile;
+# the build host never executes the v4-only instructions, it only
+# emits them into the object files. No special runner is needed for
+# any of the four levels below; only *running* the resulting v4 kernel
+# needs matching hardware.
+
+levels:
+  - id: v1
+    label: "x86-64 (generic baseline)"
+    march: x86-64
+    isa_num: 1
+    pkg_suffix: ""
+    notes: "Runs on any 64-bit x86 CPU since ~2003."
+
+  - id: v2
+    label: "x86-64-v2"
+    march: x86-64-v2
+    isa_num: 2
+    pkg_suffix: "-v2"
+    notes: "Nehalem / Bulldozer era+ (SSE4.2, POPCNT). Not published by CachyOS itself - see note above."
+
+  - id: v3
+    label: "x86-64-v3"
+    march: x86-64-v3
+    isa_num: 3
+    pkg_suffix: "-v3"
+    notes: "Haswell / Excavator era+ (AVX2, BMI2, FMA). CachyOS's own recommended default for modern hardware."
+
+  - id: v4
+    label: "x86-64-v4"
+    march: x86-64-v4
+    isa_num: 4
+    pkg_suffix: "-v4"
+    notes: "Requires AVX-512 (Skylake-X / Zen4+). Smallest install base - build it, but don't expect most users to run it."
+
+compiler_requirements:
+  gcc_min: "11"
+  clang_min: "12"
+  note: >
+    v4 needs the -march=x86-64-v4 alias, which needs GCC >= 11 or
+    LLVM >= 12. ubuntu-24.04 and current archlinux/fedora container
+    images all ship well past that as of 2026; pin exact versions in
+    the workflow if that ever stops being true.
