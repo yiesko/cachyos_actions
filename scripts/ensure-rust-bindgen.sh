@@ -33,6 +33,27 @@ echo "CONFIG_RUST=y detected - ensuring rustc/cargo/bindgen/core sources ..."
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Storm-proof fetch flags (same policy as fetch-cachyos-source.sh: CI
+# bursts make rustup/crates.io hiccup) + generic retry runner so a
+# transient failure doesn't kill a cell that already downloaded 250 MB.
+FETCH_RETRY=(--retry 8 --retry-delay 10 --retry-max-time 300 --retry-all-errors)
+
+retry_loop() { # retry_loop <tries> <desc> <cmd...>
+  local tries="$1" desc="$2"
+  shift 2
+  local attempt=1
+  while (( attempt <= tries )); do
+    if "$@"; then return 0; fi
+    if (( attempt < tries )); then
+      echo "warning: $desc failed (attempt $attempt/$tries), retrying ..." >&2
+      sleep $((attempt * 10))
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "error: $desc failed after $tries attempts." >&2
+  return 1
+}
+
 # Persist a PATH entry for the CALLER too: `export` below dies with this
 # script, so append to $GITHUB_PATH when running under Actions (observed
 # bug: "Rust toolchain ready" printed, then `make` failed to find rustc).
@@ -55,18 +76,18 @@ if have dnf; then
   dnf install -y rust cargo clang rust-bindgen
 elif have apt-get; then
   if ! have rustc || ! have cargo; then
-    curl -fsSL --retry 3 --retry-delay 5 https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+    curl -fsSL "${FETCH_RETRY[@]}" https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
     persist_path "${HOME}/.cargo/bin"
   fi
   if have rustup; then
-    rustup component add rust-src
+    retry_loop 3 "rustup component add rust-src" rustup component add rust-src
   else
     echo "warning: rustup not found - cannot install rust-src component; hoping distro rustc ships it." >&2
   fi
   # bindgen must match what the kernel expects; a current release built
   # from crates.io is the safest bet against moving kernel requirements.
   if ! have bindgen; then
-    cargo install --locked bindgen-cli
+    retry_loop 3 "cargo install bindgen-cli" cargo install --locked bindgen-cli
     persist_path "${HOME}/.cargo/bin"
   fi
 else

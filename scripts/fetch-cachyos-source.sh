@@ -94,12 +94,25 @@ KEYS=(
 )
 keys_ok=1
 for KEY in "${KEYS[@]}"; do
-  # --batch + timeout: without them gpg can hang until the runner
-  # timeout on filtered HKP networks, with diagnostics suppressed.
-  if gpg --batch --keyserver-options timeout=15 \
-      --keyserver keyserver.ubuntu.com --recv-keys "$KEY" 2>&1 \
-    || gpg --batch --keyserver-options timeout=15 \
-      --keyserver keys.openpgp.org --recv-keys "$KEY" 2>&1; then
+  # Storm-proof: keyservers hiccup under CI bursts and strict mode aborts
+  # the whole cell on a missing key — retry both servers before giving up.
+  fetched=0
+  for attempt in 1 2 3; do
+    # --batch + timeout: without them gpg can hang until the runner
+    # timeout on filtered HKP networks, with diagnostics suppressed.
+    if gpg --batch --keyserver-options timeout=15 \
+        --keyserver keyserver.ubuntu.com --recv-keys "$KEY" 2>&1 \
+      || gpg --batch --keyserver-options timeout=15 \
+        --keyserver keys.openpgp.org --recv-keys "$KEY" 2>&1; then
+      fetched=1
+      break
+    fi
+    if (( attempt < 3 )); then
+      echo "warning: key $KEY fetch failed (attempt $attempt/3), retrying ..." >&2
+      sleep $((attempt * 10))
+    fi
+  done
+  if (( fetched )); then
     echo "fetched key $KEY"
   else
     echo "warning: could not fetch key $KEY from either keyserver" >&2
