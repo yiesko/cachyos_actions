@@ -1,14 +1,40 @@
-# CachyOS multi-ISA kernel CI
+# CachyOS kernel build automation for GitHub Actions
+
+[![Weekly build](https://github.com/yiesko/cachyos_actions/actions/workflows/weekly-build.yml/badge.svg)](https://github.com/yiesko/cachyos_actions/actions/workflows/weekly-build.yml)
+[![Validate](https://github.com/yiesko/cachyos_actions/actions/workflows/validate-patches.yml/badge.svg)](https://github.com/yiesko/cachyos_actions/actions/workflows/validate-patches.yml)
+[![Latest release](https://img.shields.io/github/v/release/yiesko/cachyos_actions?display_name=tag&label=release)](https://github.com/yiesko/cachyos_actions/releases)
 
 Automated weekly builds of [CachyOS-flavoured Linux kernels](https://github.com/CachyOS/linux-cachyos)
 across every x86-64 microarchitecture level (v1/v2/v3/v4), packaged for
 **Arch**, **Debian/Ubuntu** and **Fedora** — powered by GitHub Actions,
-published as GitHub Releases.
+published as installable GitHub Releases.
 
-Nothing is forked or vendored: every run pulls CachyOS's current signed
-kernel source, patches and configs live from their repos and builds them.
-This repository only owns the build matrix and its glue scripts, so it
-keeps working as CachyOS updates without code changes here.
+- **What:** reproducible CI that tracks CachyOS upstream and rebuilds every
+  kernel variant from their live sources — **not a kernel fork**, nothing
+  vendored here. This repo owns only the build matrix and its glue scripts.
+- **For whom:** anyone who wants CachyOS kernels **outside Arch** — Fedora
+  (RPM), Debian/Ubuntu (.deb), older CPUs (a real x86-64-v2 tier upstream
+  doesn't ship), or full-matrix automation in general.
+- **Why not the official options?** CachyOS's [Kernel Manager](https://github.com/CachyOS/wiki/blob/next/src/content/docs/features/kernel_manager.mdx)
+  is interactive and Arch-only; the [COPR](https://github.com/CachyOS/copr-linux-cachyos)
+  covers Fedora from x86-64-v3 up. This adds unattended weekly rebuilds,
+  v1/v2 tiers, Debian packages, and per-variant upstream tracking.
+- **Produces:** ready-to-install `kernel` + `devel`/`headers` (RPM),
+  `linux-image` + `linux-headers` (.deb) and Arch `pkg.tar.zst` — with
+  `SHA256SUMS` + `MD5SUMS` and a per-cell build report in every release.
+
+## What does this actually produce?
+
+```text
+CachyOS source → variant definition → patch validation → kernel config
+       → kernel build (34 Arch + 34 kbuild cells) → RPM / DEB / Arch
+       → checksums + per-cell report in a stable GitHub Release
+```
+
+**Just want a kernel?** Pick your ISA below, grab the files from the
+[latest release](../../releases/latest), verify, install — no clone needed.
+Prefer the terminal? `contrib/fetch-kernel.sh` does download + verify for
+you (no `gh` login needed).
 
 ---
 
@@ -16,7 +42,7 @@ keeps working as CachyOS updates without code changes here.
 
 Grab artifacts from the [Releases page](../../releases) (weekly stable
 releases tagged `weekly-N`). Each release contains packages for every
-variant × ISA level × distro combination, plus `SHA256SUMS`.
+variant × ISA level × distro combination, plus `SHA256SUMS` + `MD5SUMS`.
 
 ### 1. Pick your ISA level
 
@@ -60,21 +86,24 @@ per week** — sized for a public repo's unlimited Linux minutes.
 
 ### 3. Install
 
-Verify first: every asset is covered by `SHA256SUMS`; if the repo has
-GPG signing configured there will also be signed RPMs and a
-`RPM-GPG-KEY-cachyos-ci.asc` public key.
+Verify first: every asset is covered by `SHA256SUMS` (and `MD5SUMS`);
+if the repo has GPG signing configured there will also be signed RPMs
+and a `RPM-GPG-KEY-cachyos-ci.asc` public key.
 
 ```sh
-sha256sum -c SHA256SUMS          # from inside the download folder
+sha256sum -c SHA256SUMS --ignore-missing  # the file covers the whole
+                                          # release: missing = not downloaded, not corrupt
 ```
 
 **Fedora**
 
 ```sh
-sudo dnf install ./kernel-cachyos-*v3*.rpm
+sudo dnf install ./kernel-*v3*.rpm   # kernel + devel + headers for your ISA
 # SELinux only, needed once so modules can load:
 sudo setsebool -P domain_kernel_load_modules on
 ```
+(If you only want the kernel and keep stock `-devel`/`-headers`
+untouched, install just `./kernel-...rpm` — see "Updating" below.)
 
 **Debian / Ubuntu**
 
@@ -90,7 +119,7 @@ sudo pacman -U ./linux-cachyos-*.pkg.tar.zst
 
 Then reboot. Keep your stock kernel installed as a fallback boot entry.
 
-> ⚠️ **These kernels are unsupported and UNSIGNED.** Don't use them on
+> **These kernels are unsupported and UNSIGNED.** Don't use them on
 > machines you care about without understanding what you're installing.
 > If you boot with **Secure Boot enabled**, the kernel won't start unless
 > *you* sign it and enroll your own key (mokutil/sbctl/pesign — your
