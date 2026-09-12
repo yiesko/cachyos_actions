@@ -162,7 +162,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Cache CachyOS source tarballs by tag
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tarball-cache
           key: tarball-${{ matrix.src_tag }}

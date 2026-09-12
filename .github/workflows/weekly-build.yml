@@ -110,7 +110,7 @@ jobs:
           df -h /
 
       - name: Restore ccache (arch)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ccache
             # NOTE: src_tag in the key avoids reusing a stale cache across
@@ -209,7 +209,7 @@ jobs:
           df -h /
 
       - name: Restore ccache (kbuild)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ccache
           # src_tag + build_lto in the key: a cache from 7.2.3 must never
@@ -220,7 +220,7 @@ jobs:
             ccache-kbuild-
 
       - name: Cache rustup/cargo toolchain (bindgen)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo
