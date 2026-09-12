@@ -318,12 +318,12 @@ jobs:
                 f="./${v}-${isa}-${fmt}.txt"
                 if [[ -f "$f" ]]; then
                   s="$(cat "$f")"
-                  [[ "$s" == ok ]] && row+=" :white_check_mark:" || row+=" :x: (\`${s#fail:}\`)"
+                  [[ "$s" == ok ]] && row+=" :white_check_mark: |" || row+=" :x: (\`${s#fail:}\`) |"
                 else
-                  row+=" :grey_question:"
+                  row+=" :grey_question: |"
                 fi
               done
-              echo "$row |"
+              echo "$row"
             done
             echo
             echo "Install at your own risk. Kernels/modules ship unsigned;" \
