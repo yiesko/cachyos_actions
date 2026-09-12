@@ -27,7 +27,7 @@ published as installable GitHub Releases.
 
 ```text
 CachyOS source → variant definition → patch validation → kernel config
-       → kernel build (34 Arch + 34 kbuild cells) → RPM / DEB / Arch
+       → kernel build (34 Arch + 42 kbuild cells, incl. LTO extras) → RPM / DEB / Arch
        → checksums + per-cell report in a stable GitHub Release
 ```
 
@@ -81,8 +81,9 @@ scheduler patch for its default, deckify applies BORE for the same
 scheduler value, and so on).
 
 That yields 34 ISA-level combinations (38 minus the 4 disabled BMQ
-cells) × 2 build jobs (Arch + merged kbuild for .deb/.rpm) ≈ **68 builds
-per week** — sized for a public repo's unlimited Linux minutes.
+cells) across 2 build jobs — 34 Arch cells + 42 kbuild cells (incl. 8
+flagship ThinLTO/Full extras) ≈ **76 builds per week** — sized for a
+public repo's unlimited Linux minutes.
 
 ### 3. Install
 
@@ -229,8 +230,11 @@ validate-patches.yml  PR gate: shellcheck + patch dry-runs per scheduler, no com
   at build time using the exact same mapping as upstream PKGBUILDs.
 - Kernel configuration replicates upstream's `prepare()` toggles
   (scheduler, ISA level via `_processor_opt=generic_vN`, 1000 Hz, THP…).
-- Optional Clang ThinLTO (`build_lto=true`) for the deb/rpm paths; the
-  Arch path always builds at each PKGBUILD's own authentic LTO default
+- Optional Clang ThinLTO/Full (`lto_variants`, default: flagship) as extra
+  kbuild cells next to the GCC ones, suffixed `-thin`/`-full` (plus your
+  builder tag, e.g. `7.2.4-cachyos-v3-thin-yieskoW` in `uname -r`); the
+  legacy `build_lto=true` flips the whole kbuild run to ThinLTO instead.
+  The Arch path always builds at each PKGBUILD's own authentic LTO default
   (its static `b2sums` array pins the source set, so overriding would
   break integrity checking). AutoFDO/Propeller cannot be replicated in
   CI at any distro — those require perf profiles collected from real
@@ -247,7 +251,8 @@ cron run it:
 |---|---|
 | `variants` | comma-separated ids (blank = all enabled), e.g. `cachyos-bore` |
 | `isa_levels` | comma-separated levels, e.g. `v2,v3` (blank = all) |
-| `build_lto` | Clang ThinLTO for deb/rpm cells (RAM-hungry link phase) |
+| `build_lto` | Clang ThinLTO for ALL kbuild cells (slower, memory-hungry; legacy whole-run mode) |
+| `lto_variants` | Variants gaining extra ThinLTO+Full kbuild cells alongside GCC (default: `cachyos`; Arch excluded — makepkg pins LTO per PKGBUILD) |
 | `publish_repo` | publish RPMs as a browsable DNF repo on GitHub Pages |
 | `force_rebuild` | bypass the freshness gate (rebuild even if unchanged) |
 
@@ -259,8 +264,9 @@ run summary, and no empty release is created. Any moved variant (or a new
 one, or a missing/unreadable manifest) rebuilds the full matrix — fail
 open by design. Network cost of the check: 2 unauthenticated API calls.
 
-Cost facts: **the repo must be public** for the full matrix (68 kernel
-builds/week: 34 Arch cells + 34 merged kbuild cells) — private repos get only a few thousand free Actions
+Cost facts: **the repo must be public** for the full matrix (76 kernel
+builds/week: 34 Arch cells + 42 kbuild cells, incl. 8 flagship ThinLTO/Full
+extras) — private repos get only a few thousand free Actions
 minutes/month and one kernel compile takes 60–120 min. Per-job timeouts
 (350 min) sit under GitHub's hard 6-hour cap. First run after a change?
 Smoke-test one cell (`variants=cachyos-bore`, `isa_levels=v3`).
