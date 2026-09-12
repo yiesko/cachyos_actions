@@ -54,6 +54,7 @@ jobs:
       matrix: ${{ steps.gen.outputs.matrix }}
       kernel_version: ${{ steps.gen.outputs.kernel_version }}
       src_tag: ${{ steps.gen.outputs.src_tag }}
+      series: ${{ steps.gen.outputs.series }}
       changed: ${{ steps.gen.outputs.changed }}
       changed_variants: ${{ steps.gen.outputs.changed_variants }}
       prev_release: ${{ steps.gen.outputs.prev_release }}
@@ -339,10 +340,42 @@ jobs:
       - name: Build per-cell summary
         env:
           MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix }}
-          KERNEL_VERSION: ${{ needs.generate-matrix.outputs.kernel_version }}
+          SERIES: ${{ needs.generate-matrix.outputs.series }}
         run: |
           {
-            echo "## CachyOS kernels ${KERNEL_VERSION} - weekly-${{ github.run_number }}"
+            echo "## CachyOS kernels ${SERIES} — weekly-${{ github.run_number }}"
+            echo
+            echo "Automated CachyOS kernel builds, tracked live from upstream PKGBUILDs (nothing vendored) — Arch, Debian/Ubuntu and Fedora packages for x86-64 v1–v4."
+            echo
+            echo "Built from commit \`${GITHUB_SHA::7}\` ([run #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
+            echo
+            echo "### Download"
+            echo
+            echo "**1. Pick your ISA level** — check yours with \`/lib64/ld-linux-x86-64.so.2 --help | grep supported\`, or match your CPU below:"
+            echo
+            echo "| ISA | Intel examples | AMD examples | File infix |"
+            echo "|---|---|---|---|"
+            echo "| v1 | Core 2 Duo/Quad, 1st-gen Atom 64-bit | Athlon 64 X2, Turion 64 | \`-v1\` (Arch v1 has no suffix) — runs everywhere |"
+            echo "| v2 | Core i3/i5/i7 1st–3rd gen, e.g. i7-920 (Nehalem), i7-2600K (Sandy Bridge), i7-3770 (Ivy Bridge) | FX-8350 (Piledriver), A10 APUs — pre-Ryzen | \`-v2\` — no official CachyOS tier, exclusive to CI like this |"
+            echo "| v3 | Core iX 4th gen and newer, e.g. i7-4770K (Haswell) through i9-14900K — incl. 12th+ gen (no AVX-512 there) | Ryzen 1000–5000 (Zen–Zen 3), e.g. Ryzen 5 3600 / 5600X | \`-v3\` — CachyOS's recommended default, fits most PCs |"
+            echo "| v4 | Xeon Scalable / Ice Lake-SP, i9-11900K (Rocket Lake); most consumer Intel does NOT qualify | Ryzen 7000+ (Zen 4+), e.g. Ryzen 5 7600X, EPYC Genoa | \`-v4\` — AVX-512 only |"
+            echo
+            echo "When in doubt, pick the **lower** level: a v2 kernel boots on a v3 CPU (just less optimized), but a v4 kernel will fault on a CPU without AVX-512."
+            echo
+            echo "**2. Pick your variant** (scheduler and exact upstream base built in this release):"
+            echo
+            echo "| Variant | Scheduler | Base |"
+            echo "|---|---|---|"
+            echo "$MATRIX_JSON" | jq -r '.include | unique_by(.variant) | .[] | "| \(.variant) | \(.scheduler) | \(.src_tag) |"'
+            echo
+            echo "**3. Install** (keep your stock kernel as a fallback boot entry):"
+            echo
+            echo "- **Fedora:** \`sudo dnf install ./kernel-*-<isa>.rpm\` (kernel + devel + headers)"
+            echo "- **Debian/Ubuntu:** \`sudo dpkg -i ./linux-image-*.deb ./linux-headers-*.deb\`"
+            echo "- **Arch:** \`sudo pacman -U ./linux-cachyos-*.pkg.tar.zst\`"
+            echo "- No clone needed — or automate it: \`contrib/fetch-kernel.sh\` in this repo."
+            echo
+            echo "### Build matrix"
             echo
             echo "| Variant | ISA | Arch | Kbuild (.deb/.rpm) |"
             echo "|---|---|---|---|"
@@ -361,12 +394,23 @@ jobs:
               echo "$row"
             done
             echo
-            echo "Install at your own risk. Kernels/modules ship unsigned;" \
-                 "Secure Boot users must handle signing themselves (see README)."
+            echo "### Integrity"
+            echo
+            echo "- \`SHA256SUMS\` + \`MD5SUMS\` cover every asset in this release:"
+            echo "  \`sha256sum -c SHA256SUMS --ignore-missing\` (missing = not downloaded, not corrupt)."
+            echo "  \`md5sum -c MD5SUMS --ignore-missing\`"
+            echo "- \`versions.json\` records the exact upstream source tag built per variant — it feeds the CI freshness gate, so weeks without upstream changes publish nothing."
+            echo
+            echo "### Notes"
+            echo
+            echo "- Variants disabled in this cycle are documented in the README (not built, not listed above)."
+            echo "- Kernels/modules ship **unsigned**; Secure Boot users must sign them"
+            echo "  and enroll their own key (see README + \`contrib/sign-kernel-mok.sh\`)."
+            echo "- Install at your own risk; keep a stock kernel as a fallback boot entry."
           } > release-notes.md
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create prerelease with all artifacts
+      - name: Create stable release with all artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -374,7 +418,7 @@ jobs:
           shopt -s nullglob
           files=(out/*)
           gh release create "$tag" \
-            --title "CachyOS kernels ${{ needs.generate-matrix.outputs.kernel_version }} ($tag)" \
+            --title "CachyOS kernels ${{ needs.generate-matrix.outputs.series }} ($tag)" \
             --notes-file release-notes.md \
             --target "${{ github.sha }}" \
             "${files[@]}"

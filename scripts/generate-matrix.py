@@ -308,10 +308,25 @@ def main():
                 f.write(f"### Freshness gate: SKIP\n\nNo upstream changes "
                         f"({reason}) — build jobs will skip.\n")
 
+    # Distinct upstream bases in this release, config order (flagship
+    # first): e.g. "7.2.4, 6.18.50, 7.1.8, 7.3-rc2". Release titles carry
+    # every series instead of only the flagship's, so LTS/Hardened/RC
+    # users see theirs at a glance (the per-variant table has the rest).
+    # A lagging folder (deckify on 7.2.3 while others are 7.2.4) shows up
+    # as its own entry until upstream bumps it — truthful by construction.
+    series: list[str] = []
+    for _vid, _tag in variant_tags.items():
+        _m = re.match(r"^cachyos-(.+)-(\d+)$", _tag or "")
+        _base = _m.group(1) if _m else ""
+        if _base and _base not in series:
+            series.append(_base)
+    series_str = ", ".join(series) if series else kernel_version
+
     lines = [
         f"matrix={json.dumps(matrix)}\n",
         f"kernel_version={kernel_version}\n",
         f"src_tag={src_tag}\n",
+        f"series={series_str}\n",
         f"changed={'true' if changed else 'false'}\n",
         f"changed_variants={json.dumps(changed_ids)}\n",
         f"prev_release={prev_release}\n",
