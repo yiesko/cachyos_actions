@@ -222,6 +222,7 @@ def main():
                 "patches": " ".join(variant.get("patches", [])),
                 "cachy_config": "yes" if variant.get("cachy_config", True) else "no",
                 "preempt": variant.get("preempt", "full"),
+                "hz": variant.get("hz", 1000),
                 "src_tag": src_tag,
                 "isa": isa["id"],
                 "isa_num": isa["isa_num"],

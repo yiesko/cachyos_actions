@@ -69,6 +69,12 @@ export CCACHE_DIR="${CCACHE_DIR:-${ROOT_DIR}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-3G}"
 mkdir -p "$CCACHE_DIR"
 ccache -M "$CCACHE_MAXSIZE" >/dev/null || echo "warning: ccache unavailable - building without cache." >&2
+# Stats discipline: zero counters now so the end-of-cell readout below is
+# THIS cell's hit rate (not lifetime), answering whether ccache earns its
+# ~10GB repo quota across weekly version bumps.
+ccache -z >/dev/null 2>&1 || true
+echo "--- ccache baseline ---"
+ccache -s 2>&1 | head -n 12 || true
 
 bash "${SCRIPTS_DIR}/set-march.sh" "$MARCH"
 
@@ -115,3 +121,5 @@ if (( ${#staged_pkgs[@]} == 0 )); then
   exit 1
 fi
 echo "kbuild cell complete: ${#staged_pkgs[@]} package(s) staged."
+echo "--- ccache final (this cell) ---"
+ccache -s 2>&1 | head -n 12 || true

@@ -68,7 +68,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet "pyyaml==6.0.3"
 
       - name: Resolve variant x ISA matrix + current CachyOS version
         id: gen
@@ -133,6 +133,7 @@ jobs:
             -e USE_LTO \
             -e CACHY_CONFIG="${{ matrix.cachy_config }}" \
             -e PREEMPT_MODE="${{ matrix.preempt }}" \
+            -e HZ_TICKS="${{ matrix.hz }}" \
             -e EXTRA_PATCHES="${{ matrix.patches }}" \
             -e CCACHE_DIR=/ccache \
             -e SRC_TAG="${{ matrix.src_tag }}" \
@@ -188,6 +189,7 @@ jobs:
       USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
       CACHY_CONFIG: ${{ matrix.cachy_config }}
       PREEMPT_MODE: ${{ matrix.preempt }}
+      HZ_TICKS: ${{ matrix.hz }}
       EXTRA_PATCHES: ${{ matrix.patches }}
       VARIANT: ${{ matrix.variant }}
       PKGBUILD_DIR: ${{ matrix.pkgbuild_dir }}

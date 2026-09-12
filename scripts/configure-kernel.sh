@@ -16,6 +16,8 @@
 # Usage: configure-kernel.sh <srcdir> <pkgbuild_dir> <scheduler> <isa_num 1-4>
 # Env:   CACHY_CONFIG=yes|no   (default yes; per-variant `_cachy_config`)
 #        PREEMPT_MODE=full|lazy (default full; rt schedulers ignore it)
+#        HZ_TICKS=100|250|300|500|600|750|1000 (default 1000; per-variant
+#                 `_HZ_ticks` — the server folder ships 300)
 set -euo pipefail
 
 SRCDIR="${1:?}"; PKGBUILD_DIR="${2:?}"; SCHEDULER="${3:?}"; ISA_NUM="${4:?}"
@@ -67,9 +69,18 @@ cfg -e GENERIC_CPU -d MZEN4 -d X86_NATIVE_CPU \
   --set-val X86_64_VERSION "$ISA_NUM"
 echo "Selected x86-64-v${ISA_NUM} (or generic, for v1)."
 
-# Tick rate: default to CachyOS's own default (1000Hz). Change here
-# if you want a different fixed rate across the whole matrix.
-cfg -d HZ_300 -e HZ_1000 --set-val HZ 1000
+# Tick rate: mirrors the `case "$_HZ_ticks" in` block in prepare() -
+# per-variant `_HZ_ticks` default (1000 everywhere upstream except the
+# server folder at 300), validated the same way (unknown values die here,
+# not deep inside olddefconfig).
+case "${HZ_TICKS:-1000}" in
+  100|250|500|600|750|1000)
+    cfg -d HZ_300 -e "HZ_${HZ_TICKS}" --set-val HZ "${HZ_TICKS}" ;;
+  300)
+    cfg -e HZ_300 --set-val HZ 300 ;;
+  *) echo "unknown HZ_TICKS: ${HZ_TICKS:-}" >&2; exit 1 ;;
+esac
+echo "Tick rate: ${HZ_TICKS:-1000}Hz."
 
 # Preemption model - mirrors each variant's `_preempt` default (server
 # ships LAZY upstream). Skipped entirely for rt schedulers, exactly like

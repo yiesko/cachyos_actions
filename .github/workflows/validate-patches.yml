@@ -48,7 +48,7 @@ jobs:
 
       - name: Config YAML sanity + cross-check against live PKGBUILDs
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet "pyyaml==6.0.3"
           python3 - <<'PY'
           import importlib.util
           import yaml
@@ -69,6 +69,8 @@ jobs:
               assert v.get("pkgbuild_dir"), f"{v.get('id')}: missing pkgbuild_dir"
               assert v.get("scheduler") in valid_sched, \
                   f"{v.get('id')}: unknown scheduler {v.get('scheduler')!r}"
+              assert v.get("hz", 1000) in (100, 250, 300, 500, 600, 750, 1000), \
+                  f"{v.get('id')}: unknown hz {v.get('hz')!r}"
               for p in v.get("patches", []):
                   assert isinstance(p, str) and p and " " not in p, \
                       f"{v.get('id')}: bad patch entry {p!r}"
@@ -94,7 +96,7 @@ jobs:
       - name: Resolve per-variant tags and patch lists
         id: out
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet "pyyaml==6.0.3"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import importlib.util
           import json
@@ -137,6 +139,7 @@ jobs:
                   "src_tag": src_tag,
                   "cachy_config": "yes" if v.get("cachy_config", True) else "no",
                   "preempt": v.get("preempt", "full"),
+                  "hz": v.get("hz", 1000),
               })
               print(f"{v['id']}: {src_tag} ({len(v.get('patches', []))} extra patches)",
                     file=sys.stderr)
@@ -185,6 +188,7 @@ jobs:
           SCHEDULER: ${{ matrix.scheduler }}
           CACHY_CONFIG: ${{ matrix.cachy_config }}
           PREEMPT_MODE: ${{ matrix.preempt }}
+          HZ_TICKS: ${{ matrix.hz }}
         run: |
           set -euo pipefail
           SRCDIR="$(find kernel-src -maxdepth 1 -mindepth 1 -type d -name 'cachyos-*' -print -quit)"

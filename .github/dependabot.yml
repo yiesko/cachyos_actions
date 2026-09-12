@@ -1,0 +1,12 @@
+# Keep the Actions used by .github/workflows/* on current majors.
+# Public repo, weekly cadence: a Monday-morning review rhythm fits.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3

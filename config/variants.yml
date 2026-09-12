@@ -28,6 +28,8 @@
 #   cachy_config   mirrors `_cachy_config` (server ships with it OFF)
 #   preempt        mirrors `_preempt` (server defaults to lazy); always
 #                  ignored for rt/rt-bore schedulers, like upstream
+#   hz             mirrors `_HZ_ticks` (default 1000 everywhere upstream
+#                  except the server folder, which ships 300)
 #   min_isa        optional x86-64 level floor (COPR docs: everything
 #                  needs v3 except lts/server, which need only v2)
 #
@@ -112,9 +114,10 @@ variants:
     patches: []
     cachy_config: false
     preempt: lazy
+    hz: 300
     description: >-
-      Server tuning: EEVDF with LAZY preemption and _cachy_config OFF,
-      straight from its PKGBUILD defaults.
+      Server tuning: EEVDF with LAZY preemption, 300 Hz tick and
+      _cachy_config OFF, straight from its PKGBUILD defaults.
     min_isa: v2
     enabled: true
 

@@ -20,6 +20,11 @@ export PATH="/usr/lib/ccache:${PATH}"
 export CCACHE_DIR="${CCACHE_DIR:-/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-2G}"
 mkdir -p "$CCACHE_DIR"
+# Same stats discipline as the kbuild path: zero now, report at the end,
+# so each cell's log shows whether ccache actually engaged here.
+ccache -z >/dev/null 2>&1 || true
+echo "--- ccache baseline ---"
+ccache -s 2>&1 | head -n 12 || true
 
 bash /work/scripts/set-march.sh "$MARCH"
 
@@ -39,8 +44,12 @@ runuser -u builder -- env \
   USE_LTO="${USE_LTO:-none}" \
   CACHY_CONFIG="${CACHY_CONFIG:-yes}" \
   PREEMPT_MODE="${PREEMPT_MODE:-full}" \
+  HZ_TICKS="${HZ_TICKS:-1000}" \
   CCACHE_DIR="$CCACHE_DIR" \
   PATH="$PATH" \
   HOME=/home/builder \
   GITHUB_WORKSPACE=/work \
   bash /work/scripts/package-arch.sh
+
+echo "--- ccache final (this cell) ---"
+ccache -s 2>&1 | head -n 12 || true

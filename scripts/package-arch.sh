@@ -29,7 +29,7 @@ export _cpusched="$SCHEDULER"
 export _processor_opt="generic_v${ISA_NUM}"
 export _use_lto_suffix=no   # keep package names predictable across ISA levels
 export _use_gcc_suffix=no
-export _HZ_ticks=1000
+export _HZ_ticks="${HZ_TICKS:-1000}"
 
 # NOTE: do NOT override `_use_llvm_lto` here. Each PKGBUILD ships a
 # STATIC b2sums array sized for that folder's DEFAULT option set - e.g.
