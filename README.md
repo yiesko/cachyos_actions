@@ -232,7 +232,7 @@ validate-patches.yml  PR gate: shellcheck + patch dry-runs per scheduler, no com
   (scheduler, ISA level via `_processor_opt=generic_vN`, 1000 Hz, THP…).
 - Optional Clang ThinLTO/Full (`lto_variants`, default: flagship) as extra
   kbuild cells next to the GCC ones, suffixed `-thin`/`-full` (plus your
-  builder tag, e.g. `7.2.4-cachyos-v3-thin-yieskoW` in `uname -r`); the
+  builder tag, e.g. `7.2.4-cachyos-v3-thin-yieskow` in `uname -r`); the
   legacy `build_lto=true` flips the whole kbuild run to ThinLTO instead.
   The Arch path always builds at each PKGBUILD's own authentic LTO default
   (its static `b2sums` array pins the source set, so overriding would

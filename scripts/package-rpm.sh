@@ -31,8 +31,12 @@ case "${USE_LTO:-none}" in
   *) echo "unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
 esac
 # Same builder tag as package-deb.sh (shows in uname -r; kbuild turns the
-# dashes into underscores in .rpm names). Arch path cannot carry it.
-BUILDER_SUFFIX="${BUILDER_SUFFIX:--yieskoW}"
+# dashes into underscores in .rpm names). Lowercase to match the .deb
+# constraint even though RPM would tolerate uppercase. Arch path cannot
+# carry it.
+# NOTE: ${VAR-default} (no colon) so that BUILDER_SUFFIX="" truly
+# disables instead of falling back to the default.
+BUILDER_SUFFIX="${BUILDER_SUFFIX--yieskow}"
 export LOCALVERSION="-${VARIANT}-${ISA}${LTO_SUFFIX}${BUILDER_SUFFIX}"
 export KCFLAGS="-march=${MARCH}"
 export KCPPFLAGS="-march=${MARCH}"

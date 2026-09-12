@@ -29,10 +29,14 @@ case "${USE_LTO:-none}" in
   *) echo "unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
 esac
 # Builder tag: brands uname -r / package versions as this project's builds
-# (e.g. 7.2.4-cachyos-bore-v2-yieskoW). Override with BUILDER_SUFFIX=""
-# or your own tag; empty disables. NOTE: Arch packages cannot carry this
+# (e.g. 7.2.4-cachyos-bore-v2-yieskow). MUST stay lowercase: dpkg rejects
+# uppercase in package names ([a-z0-9][-+.:a-z0-9]+) and only tells you
+# after the full compile. Override with BUILDER_SUFFIX="" or your own
+# (lowercase) tag; empty disables. NOTE: Arch packages cannot carry this
 # (makepkg uses the upstream PKGBUILD unmodified by design).
-BUILDER_SUFFIX="${BUILDER_SUFFIX:--yieskoW}"
+# NOTE: ${VAR-default} (no colon) so that BUILDER_SUFFIX="" truly
+# disables instead of falling back to the default.
+BUILDER_SUFFIX="${BUILDER_SUFFIX--yieskow}"
 export LOCALVERSION="-${VARIANT}-${ISA}${LTO_SUFFIX}${BUILDER_SUFFIX}"
 export KDEB_PKGVERSION="${KVER}${LOCALVERSION}-1"
 export KCFLAGS="-march=${MARCH}"

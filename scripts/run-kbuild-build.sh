@@ -17,6 +17,23 @@ set -euo pipefail
 : "${VARIANT:?}"; : "${PKGBUILD_DIR:?}"; : "${SCHEDULER:?}"
 : "${ISA_NUM:?}"; : "${MARCH:?}"
 
+# Fail fast on package-name-illegal characters: bindeb-pkg only surfaces
+# dpkg's lowercase rule AFTER the full compile (~1h wasted per cell).
+# Reconstruct the effective LOCALVERSION with the same rules as
+# package-deb.sh/package-rpm.sh and refuse uppercase up front (dpkg
+# requires [a-z0-9][-+.:a-z0-9]+). RPM would tolerate more, but every
+# kbuild cell builds BOTH formats from one tree.
+case "${USE_LTO:-none}" in
+  none) _lto_suffix="" ;;
+  thin|thin-dist|full) _lto_suffix="-${USE_LTO}" ;;
+  *) echo "error: unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
+esac
+_effective_localversion="-${VARIANT}-${ISA_NUM:+v}${ISA_NUM:-}${_lto_suffix}${BUILDER_SUFFIX--yieskow}"
+if [[ "$_effective_localversion" == *[A-Z]* ]]; then
+  echo "error: LOCALVERSION '$_effective_localversion' contains uppercase - dpkg package names must be lowercase." >&2
+  exit 1
+fi
+
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPTS_DIR")"
 
