@@ -100,7 +100,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 10
       matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix_arch) }}
     env:
       USE_LTO: ${{ inputs.build_lto == true && 'thin' || 'none' }}
@@ -188,7 +188,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 10
       matrix: ${{ fromJSON(needs.generate-matrix.outputs.matrix_kbuild) }}
     env:
       SRC_TAG: ${{ matrix.src_tag }}
