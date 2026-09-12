@@ -39,9 +39,10 @@ for p in "$@"; do
   fname="$(basename "$p")"
   tmp_patch="${PATCH_TMPDIR}/${fname}"
   echo "Fetching ${PATCHSRC}/${p} ..."
-  # --retry-delay: kernel-patches raw hosting throttles bursts from
-  # 38 parallel cells; fail with the URL, not a bare curl error.
-  if ! curl -fsSL --retry 3 --retry-delay 5 "${PATCHSRC}/${p}" -o "$tmp_patch"; then
+  # Same storm-proof retry policy as fetch-cachyos-source.sh: kernel-patches
+  # raw hosting throttles bursts from 70+ parallel cells. Fail with the
+  # URL, not a bare curl error.
+  if ! curl -fsSL --retry 8 --retry-delay 10 --retry-max-time 300 --retry-all-errors "${PATCHSRC}/${p}" -o "$tmp_patch"; then
     echo "FAIL: $fname (download failed: ${PATCHSRC}/${p})" >&2
     failed=1
     continue

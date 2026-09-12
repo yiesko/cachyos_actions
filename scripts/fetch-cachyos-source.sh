@@ -40,11 +40,17 @@ API="https://api.github.com/repos/CachyOS/linux"
 BASE="https://github.com/CachyOS/linux/releases/download"
 STABLE_TAG_RE='^cachyos-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'
 
+# CDN 500-storms under 70+ parallel cells are real (observed Sep 2026):
+# curl's default tiny backoff gives up in seconds. Retry longer with
+# capped total time instead. --retry-all-errors needs curl >= 7.71
+# (2020); every runner/container here is far newer.
+FETCH_RETRY=(--retry 8 --retry-delay 10 --retry-max-time 300 --retry-all-errors)
+
 gh_curl() {
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl -fsSL --retry 3 -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+    curl -fsSL "${FETCH_RETRY[@]}" -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
   else
-    curl -fsSL --retry 3 "$@"
+    curl -fsSL "${FETCH_RETRY[@]}" "$@"
   fi
 }
 
@@ -75,8 +81,8 @@ fi
 
 SRCNAME="$TAG"
 echo "Fetching ${SRCNAME}.tar.gz ..."
-curl -fL --retry 3 -o "${SRCNAME}.tar.gz"     "${BASE}/${SRCNAME}/${SRCNAME}.tar.gz"
-curl -fL --retry 3 -o "${SRCNAME}.tar.gz.asc" "${BASE}/${SRCNAME}/${SRCNAME}.tar.gz.asc"
+curl -fL "${FETCH_RETRY[@]}" -o "${SRCNAME}.tar.gz"     "${BASE}/${SRCNAME}/${SRCNAME}.tar.gz"
+curl -fL "${FETCH_RETRY[@]}" -o "${SRCNAME}.tar.gz.asc" "${BASE}/${SRCNAME}/${SRCNAME}.tar.gz.asc"
 
 # Signing keys exactly as declared in validpgpkeys=() in
 # linux-cachyos-bore/PKGBUILD (verified Aug 2026). If verification fails
