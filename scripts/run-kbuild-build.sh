@@ -21,6 +21,10 @@
 #     only one family; weekly matrix always builds both.
 set -euo pipefail
 
+# Provenance: cell wall-clock start for the release manifest fragment.
+CELL_START_EPOCH="$(date +%s 2>/dev/null || echo 0)"
+export CELL_START_EPOCH
+
 : "${VARIANT:?}"; : "${PKGBUILD_DIR:?}"; : "${SCHEDULER:?}"
 : "${ISA_NUM:?}"; : "${MARCH:?}"
 
@@ -57,6 +61,11 @@ ISA_LABEL="${ISA_LABEL:-v${ISA_NUM}}"
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPTS_DIR")"
+
+# Provenance: patch applier records per-patch hashes here; the cell
+# collector below picks it up. Explicit path (not the applier default)
+# so kbuild, dry-runs and custom builds all agree.
+export PROVENANCE_RECORD="${ROOT_DIR}/kernel-src/applied-patches.tsv"
 
 # Base toolchain + kbuild's declared debian build-deps (kernel 7.x
 # hard-fails bindeb-pkg without them - observed in CI) + rpm tooling for
@@ -174,3 +183,20 @@ fi
 echo "kbuild cell complete: ${#staged_pkgs[@]} package(s) staged."
 echo "--- ccache final (this cell) ---"
 ccache -s 2>&1 | head -n 12 || true
+
+# Provenance fragment for the release manifest (best-effort, never fatal).
+# Lands in cell-status/ so it uploads with the existing cell artifact.
+{
+  _ws="${GITHUB_WORKSPACE:-$ROOT_DIR}"
+  mkdir -p "${_ws}/cell-status" 2>/dev/null || true
+  case "${USE_LTO:-none}" in
+    none) _frag_suffix="" ;;
+    *) _frag_suffix="-${USE_LTO}" ;;
+  esac
+  _frag="${_ws}/cell-status/provenance-${VARIANT}-${ISA_LABEL}${_frag_suffix}.json"
+  CELL_KIND=kbuild JOB_NAME="${GITHUB_JOB:-kbuild}" \
+  SRCDIR="$SRCDIR" WORKDIR="${ROOT_DIR}/kernel-src" ARTIFACT_DIR="$OUT_DIR" \
+  LOCALVERSION="$_effective_localversion" \
+  UPSTREAM_DIR="" \
+  bash "${SCRIPTS_DIR}/collect-cell-provenance.sh" --out "$_frag" || true
+} || true

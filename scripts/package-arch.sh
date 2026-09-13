@@ -76,3 +76,22 @@ for pkg in "${built[@]}"; do
   fi
   cp -v -- "$pkg" "$dest"
 done
+
+# Provenance fragment for the release manifest (best-effort, never fatal).
+# The makepkg path resolves its own source=() array, so the recorded
+# upstream HEAD here is the ground truth for what was actually built
+# (the matrix src_tag is advisory on this path).
+{
+  mkdir -p "${GITHUB_WORKSPACE}/cell-status" 2>/dev/null || true
+  _frag="${GITHUB_WORKSPACE}/cell-status/provenance-${VARIANT}-v${ISA_NUM}-arch.json"
+  CELL_KIND=arch JOB_NAME="${GITHUB_JOB:-arch}" \
+  SRCDIR="" WORKDIR="" ARTIFACT_DIR="${GITHUB_WORKSPACE}/out" \
+  UPSTREAM_DIR="${GITHUB_WORKSPACE}/upstream" \
+  ISA_LABEL="v${ISA_NUM}" \
+  SRC_TAG="${SRC_TAG:-unknown}" \
+  LOCALVERSION="unknown" \
+  MARCH="${MARCH:-unknown}" \
+  KCONFIG_MODE="generic" \
+  EXTRA_PATCHES="${EXTRA_PATCHES:-}" \
+  bash "${GITHUB_WORKSPACE}/scripts/collect-cell-provenance.sh" --out "$_frag" || true
+} || true

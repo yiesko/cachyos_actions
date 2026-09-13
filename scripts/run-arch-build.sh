@@ -13,6 +13,9 @@ set -euo pipefail
 : "${VARIANT:?}"; : "${PKGBUILD_DIR:?}"; : "${SCHEDULER:?}"
 : "${ISA_NUM:?}"; : "${MARCH:?}"
 
+CELL_START_EPOCH="$(date +%s 2>/dev/null || echo 0)"
+export CELL_START_EPOCH
+
 pacman-key --init >/dev/null 2>&1 || true
 pacman -Syu --needed --noconfirm base-devel git ccache sudo
 
@@ -40,11 +43,19 @@ runuser -u builder -- env \
   PKGBUILD_DIR="$PKGBUILD_DIR" \
   SCHEDULER="$SCHEDULER" \
   ISA_NUM="$ISA_NUM" \
+  MARCH="$MARCH" \
   PKG_SUFFIX="${PKG_SUFFIX:-}" \
   USE_LTO="${USE_LTO:-none}" \
   CACHY_CONFIG="${CACHY_CONFIG:-yes}" \
   PREEMPT_MODE="${PREEMPT_MODE:-full}" \
   HZ_TICKS="${HZ_TICKS:-1000}" \
+  SRC_TAG="${SRC_TAG:-}" \
+  EXTRA_PATCHES="${EXTRA_PATCHES:-}" \
+  PKGBUILD_SHA="${PKGBUILD_SHA:-unknown}" \
+  LINUX_COMMIT="${LINUX_COMMIT:-unknown}" \
+  PATCHES_SHA="${PATCHES_SHA:-unknown}" \
+  CELL_START_EPOCH="${CELL_START_EPOCH:-0}" \
+  GITHUB_JOB="${GITHUB_JOB:-arch}" \
   CCACHE_DIR="$CCACHE_DIR" \
   PATH="$PATH" \
   HOME=/home/builder \

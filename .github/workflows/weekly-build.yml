@@ -62,6 +62,7 @@ jobs:
     outputs:
       matrix_arch: ${{ steps.gen.outputs.matrix_arch }}
       matrix_kbuild: ${{ steps.gen.outputs.matrix_kbuild }}
+      provenance_map: ${{ steps.gen.outputs.provenance_map }}
       kernel_version: ${{ steps.gen.outputs.kernel_version }}
       src_tag: ${{ steps.gen.outputs.src_tag }}
       series: ${{ steps.gen.outputs.series }}
@@ -82,6 +83,8 @@ jobs:
 
       - name: Resolve variant x ISA matrix + current CachyOS version
         id: gen
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           args=()
           if [[ "${{ inputs.force_rebuild }}" == "true" ]]; then args+=(--force); fi
@@ -149,6 +152,9 @@ jobs:
             -e EXTRA_PATCHES="${{ matrix.patches }}" \
             -e CCACHE_DIR=/ccache \
             -e SRC_TAG="${{ matrix.src_tag }}" \
+            -e PKGBUILD_SHA="${{ matrix.pkgbuild_sha }}" \
+            -e LINUX_COMMIT="${{ matrix.linux_commit }}" \
+            -e PATCHES_SHA="${{ matrix.patches_sha }}" \
             -v "$GITHUB_WORKSPACE":/work \
             -w /work \
             -v "$GITHUB_WORKSPACE/ccache":/ccache \
@@ -209,6 +215,9 @@ jobs:
       ISA_NUM: ${{ matrix.isa_num }}
       MARCH: ${{ matrix.march }}
       BUILDER_SUFFIX: ${{ inputs.builder_suffix }}
+      PKGBUILD_SHA: ${{ matrix.pkgbuild_sha }}
+      LINUX_COMMIT: ${{ matrix.linux_commit }}
+      PATCHES_SHA: ${{ matrix.patches_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -300,6 +309,10 @@ jobs:
              -o -name '*.pkg.tar.zst' -o -name '*.pkg.tar.zst.sig' \) \
              -exec mv -v {} out/ \;
           find cells -type f \( -name '*-arch.txt' -o -name '*-kbuild*.txt' \) -exec mv -v {} ./ \;
+          # Provenance fragments ride with the cell artifacts (possibly
+          # nested under per-artifact dirs); collect them next to the
+          # status files so the render step finds everything in one place.
+          find cells -type f -name 'provenance-*.json' -exec mv -v {} ./ \;
           # Never publish an empty release: every format needs artifacts,
           # and duplicate basenames mean an ISA-suffix regression.
           shopt -s nullglob
@@ -354,89 +367,25 @@ jobs:
           test -s MD5SUMS || { echo "::error::MD5SUMS is empty" >&2; exit 1; }
           cat SHA256SUMS
 
-      - name: Build per-cell summary
+      - name: Render provenance manifest + release notes
         env:
           MATRIX_JSON: ${{ needs.generate-matrix.outputs.matrix_kbuild }}
+          PROVENANCE_MAP: ${{ needs.generate-matrix.outputs.provenance_map }}
           SERIES: ${{ needs.generate-matrix.outputs.series }}
         run: |
-          {
-            echo "## CachyOS kernels ${SERIES} — weekly-${{ github.run_number }}"
-            echo
-            echo "Automated CachyOS kernel builds, tracked live from upstream PKGBUILDs (nothing vendored) — Arch, Debian/Ubuntu and Fedora packages for x86-64 v1–v4."
-            echo
-            echo "Built from commit \`${GITHUB_SHA::7}\` ([run #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
-            echo
-            echo "### Download"
-            echo
-            echo "**1. Pick your ISA level** — check yours with \`/lib64/ld-linux-x86-64.so.2 --help | grep supported\`, or match your CPU below:"
-            echo
-            echo "| ISA | Intel examples | AMD examples | File infix |"
-            echo "|---|---|---|---|"
-            echo "| v1 | Core 2 Duo/Quad, 1st-gen Atom 64-bit | Athlon 64 X2, Turion 64 | \`-v1\` (Arch v1 has no suffix) — runs everywhere |"
-            echo "| v2 | Core i3/i5/i7 1st–3rd gen, e.g. i7-920 (Nehalem), i7-2600K (Sandy Bridge), i7-3770 (Ivy Bridge) | FX-8350 (Piledriver), A10 APUs — pre-Ryzen | \`-v2\` — no official CachyOS tier, exclusive to CI like this |"
-            echo "| v3 | Core iX 4th gen and newer, e.g. i7-4770K (Haswell) through i9-14900K — incl. 12th+ gen (no AVX-512 there) | Ryzen 1000–5000 (Zen–Zen 3), e.g. Ryzen 5 3600 / 5600X | \`-v3\` — CachyOS's recommended default, fits most PCs |"
-            echo "| v4 | Xeon Scalable / Ice Lake-SP, i9-11900K (Rocket Lake); most consumer Intel does NOT qualify | Ryzen 7000+ (Zen 4+), e.g. Ryzen 5 7600X, EPYC Genoa | \`-v4\` — AVX-512 only |"
-            echo
-            echo "When in doubt, pick the **lower** level: a v2 kernel boots on a v3 CPU (just less optimized), but a v4 kernel will fault on a CPU without AVX-512."
-            echo
-            echo "**2. Pick your variant** (scheduler and exact upstream base built in this release):"
-            echo
-            echo "| Variant | Scheduler | Base |"
-            echo "|---|---|---|"
-            echo "$MATRIX_JSON" | jq -r '.include | unique_by(.variant) | .[] | "| \(.variant) | \(.scheduler) | \(.src_tag) |"'
-            echo
-            echo "**3. Install** (keep your stock kernel as a fallback boot entry):"
-            echo
-            echo "- **Fedora:** \`sudo dnf install ./kernel-*-<isa>.rpm\` (kernel + devel + headers)"
-            echo "- **Debian/Ubuntu:** \`sudo dpkg -i ./linux-image-*.deb ./linux-headers-*.deb\`"
-            echo "- **Arch:** \`sudo pacman -U ./linux-cachyos-*.pkg.tar.zst\`"
-            echo "- No clone needed — or automate it: \`contrib/fetch-kernel.sh\` in this repo."
-            echo
-            echo "### Build matrix"
-            echo
-            echo "Flavor \`gcc\` = default compiler, \`thin\`/\`full\` = Clang LTO extras (kbuild only — Arch ships each PKGBUILD's authentic default, flagship/rc ThinLTO)."
-            echo
-            echo "| Variant | ISA | Flavor | Arch | Kbuild (.deb/.rpm) |"
-            echo "|---|---|---|---|---|"
-            echo "$MATRIX_JSON" | jq -r '.include[] | [.variant, .isa, .lto, .suffix] | @tsv' |
-            while IFS=$'\t' read -r v isa lto suf; do
-              if [[ "$lto" == "none" ]]; then flavor="gcc"; else flavor="$lto"; fi
-              # Arch has no per-flavor cells (makepkg pins LTO per PKGBUILD).
-              if [[ "$lto" == "none" ]]; then
-                f="./${v}-${isa}-arch.txt"
-                if [[ -f "$f" ]]; then
-                  s="$(cat "$f")"
-                  [[ "$s" == ok ]] && archcell=" :white_check_mark: |" || archcell=" :x: (\`${s#fail:}\`) |"
-                else
-                  archcell=" :grey_question: |"
-                fi
-              else
-                archcell=" — |"
-              fi
-              kf="./${v}-${isa}-kbuild${suf}.txt"
-              if [[ -f "$kf" ]]; then
-                s="$(cat "$kf")"
-                [[ "$s" == ok ]] && kcell=" :white_check_mark: |" || kcell=" :x: (\`${s#fail:}\`) |"
-              else
-                kcell=" :grey_question: |"
-              fi
-              echo "| ${v} | ${isa} | ${flavor} |${archcell}${kcell}"
-            done
-            echo
-            echo "### Integrity"
-            echo
-            echo "- \`SHA256SUMS\` + \`MD5SUMS\` cover every asset in this release:"
-            echo "  \`sha256sum -c SHA256SUMS --ignore-missing\` (missing = not downloaded, not corrupt)."
-            echo "  \`md5sum -c MD5SUMS --ignore-missing\`"
-            echo "- \`versions.json\` records the exact upstream source tag built per variant — it feeds the CI freshness gate, so weeks without upstream changes publish nothing."
-            echo
-            echo "### Notes"
-            echo
-            echo "- Variants disabled in this cycle are documented in the README (not built, not listed above)."
-            echo "- Kernels/modules ship **unsigned**; Secure Boot users must sign them"
-            echo "  and enroll their own key (see README + \`contrib/sign-kernel-mok.sh\`)."
-            echo "- Install at your own risk; keep a stock kernel as a fallback boot entry."
-          } > release-notes.md
+          python3 -m pip install --quiet "pyyaml==6.0.3"
+          python3 scripts/render-release.py \
+            --mode weekly \
+            --cells . \
+            --out out \
+            --notes release-notes.md \
+            --matrix "$MATRIX_JSON" \
+            --provenance-map "$PROVENANCE_MAP" \
+            --series "$SERIES" \
+            --kernel-version "${{ needs.generate-matrix.outputs.kernel_version }}" \
+            --workflow weekly-build.yml
+          test -s out/provenance.json || { echo "::error::provenance.json is empty" >&2; exit 1; }
+          test -s release-notes.md || { echo "::error::release-notes.md is empty" >&2; exit 1; }
           cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create stable release with all artifacts

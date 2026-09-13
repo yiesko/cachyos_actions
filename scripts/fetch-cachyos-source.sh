@@ -155,9 +155,34 @@ if (( verify_failed )); then
   printf '::warning::%s\n' "${unverified_msg[@]}" >&2
   echo "::warning::Proceeding UNVERIFIED because ALLOW_UNVERIFIED=1 - don't ship these" \
        "artifacts anywhere you wouldn't ship an unverified random kernel." >&2
+  GPG_VERIFY="UNVERIFIED"
 else
   echo "GPG signature verified OK."
+  GPG_VERIFY="OK"
 fi
+
+# Provenance record for the release manifest (best-effort, never fatal):
+# tarball identity + verification outcome. Written next to the tarball
+# (the cell WORKDIR) so prepare-kernel-source.sh and the cell collector
+# can pick it up later.
+{
+  echo "SRC_TAG=${SRCNAME}"
+  if command -v sha256sum >/dev/null 2>&1 && [[ -f "${SRCNAME}.tar.gz" ]]; then
+    echo "TARBALL_SHA256=$(sha256sum "${SRCNAME}.tar.gz" | awk '{print $1}')"
+  else
+    echo "TARBALL_SHA256=unknown"
+  fi
+  if [[ -f "${SRCNAME}.tar.gz" ]]; then
+    # stat -c works on GNU coreutils (ubuntu runners + containers).
+    echo "TARBALL_SIZE=$(stat -c %s "${SRCNAME}.tar.gz" 2>/dev/null || echo unknown)"
+  else
+    echo "TARBALL_SIZE=unknown"
+  fi
+  echo "GPG_VERIFY=${GPG_VERIFY:-UNKNOWN}"
+  echo "ALLOW_UNVERIFIED=${allow}"
+  echo "GPG_KEYS=E18447AC260021D31F3FF6C4C8A2A4774B8B63C4,E8B9AA39F054E30E8290D492C3C4820857F654FE"
+  echo "TARBALL_URL=${BASE}/${SRCNAME}/${SRCNAME}.tar.gz"
+} > "provenance-fetch.env" 2>/dev/null || true
 
 echo "Extracting ..."
 tar xf "${SRCNAME}.tar.gz"

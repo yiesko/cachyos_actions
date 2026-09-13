@@ -36,6 +36,11 @@ if [[ ! -s "${SRCDIR}/.config" ]]; then
   echo "error: downloaded base config is missing or empty (${CONFIG_URL})." >&2
   exit 1
 fi
+# Provenance: hash of the upstream base config before our toggles.
+BASE_CONFIG_SHA256="unknown"
+if command -v sha256sum >/dev/null 2>&1; then
+  BASE_CONFIG_SHA256="$(sha256sum "${SRCDIR}/.config" | awk '{print $1}')"
+fi
 
 cd "$SRCDIR"
 
@@ -151,4 +156,18 @@ cfg \
 echo "Resolving dependent config options (olddefconfig) ..."
 make olddefconfig >/dev/null
 
-echo "Kernel config ready: $(make -s kernelrelease 2>/dev/null || echo unknown)"
+KERNELRELEASE="$(make -s kernelrelease 2>/dev/null || echo unknown)"
+echo "Kernel config ready: ${KERNELRELEASE}"
+# Provenance record for the release manifest (best-effort, never fatal).
+{
+  echo "CONFIG_URL=${CONFIG_URL}"
+  echo "BASE_CONFIG_SHA256=${BASE_CONFIG_SHA256:-unknown}"
+  if command -v sha256sum >/dev/null 2>&1 && [[ -f .config ]]; then
+    echo "FINAL_CONFIG_SHA256=$(sha256sum .config | awk '{print $1}')"
+  else
+    echo "FINAL_CONFIG_SHA256=unknown"
+  fi
+  echo "KERNELRELEASE=${KERNELRELEASE:-unknown}"
+  echo "SCHEDULER=${SCHEDULER} ISA_NUM=${ISA_NUM} KCONFIG_MODE=${KCONFIG_MODE:-generic}"
+  echo "CACHY_CONFIG=${CACHY_CONFIG:-yes} PREEMPT_MODE=${PREEMPT_MODE:-full} HZ_TICKS=${HZ_TICKS:-1000} USE_LTO=${USE_LTO:-none}"
+} > .provenance-config.env 2>/dev/null || true

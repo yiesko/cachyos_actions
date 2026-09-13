@@ -52,6 +52,8 @@ def main():
     p.add_argument("--builder-suffix", default=os.environ.get("BUILDER_SUFFIX", "-yieskow"))
     p.add_argument("--native-ack", default=os.environ.get("NATIVE_ACK", "no"))
     p.add_argument("--skip-version-resolution", action="store_true")
+    p.add_argument("--skip-provenance", action="store_true",
+                   help="don't query upstream commit SHAs (provenance fields become 'unknown')")
     args = p.parse_args()
 
     variant_id = args.variant.strip()
@@ -141,6 +143,27 @@ def main():
     lto_suffix = "" if lto == "none" else f"-{lto}"
     localversion = f"-{variant_id}-{isa_label}{lto_suffix}{builder_suffix}"
 
+    # Best-effort upstream SHAs for the release manifest. Never fatal:
+    # failures degrade to "unknown" (see generate-matrix.resolve_provenance).
+    pkgbuild_sha = "unknown"
+    linux_commit = "unknown"
+    patches_sha = "unknown"
+    if not args.skip_provenance and src_tag and not args.skip_version_resolution:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import importlib.util
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "generate_matrix_prov", str(ROOT / "scripts" / "generate-matrix.py"))
+            prov_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(prov_mod)
+            prov = prov_mod.resolve_provenance(variant["pkgbuild_dir"], src_tag)
+            pkgbuild_sha = prov.get("pkgbuild_sha", "unknown")
+            linux_commit = prov.get("linux_commit", "unknown")
+            patches_sha = prov.get("patches_sha", "unknown")
+        except Exception as exc:  # noqa: BLE001 - provenance is advisory
+            print(f"[resolve-custom] WARNING: provenance lookup failed: {exc}",
+                  file=sys.stderr)
+
     out = {
         "pkgbuild_dir": variant["pkgbuild_dir"],
         "scheduler": variant["scheduler"],
@@ -155,6 +178,13 @@ def main():
         "src_tag": src_tag,
         "localversion": localversion,
         "builder_suffix": builder_suffix,
+        "tuning_id": tuning_id,
+        "base_isa": base_isa,
+        "native_ack": args.native_ack.strip().lower(),
+        "pkg_format": pkg_format,
+        "pkgbuild_sha": pkgbuild_sha,
+        "linux_commit": linux_commit,
+        "patches_sha": patches_sha,
     }
     lines = [f"{k}={v}\n" for k, v in out.items()]
     gh_output = os.environ.get("GITHUB_OUTPUT")

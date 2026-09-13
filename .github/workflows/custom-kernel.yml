@@ -77,6 +77,13 @@ jobs:
       src_tag: ${{ steps.cfg.outputs.src_tag }}
       localversion: ${{ steps.cfg.outputs.localversion }}
       builder_suffix: ${{ steps.cfg.outputs.builder_suffix }}
+      tuning_id: ${{ steps.cfg.outputs.tuning_id }}
+      base_isa: ${{ steps.cfg.outputs.base_isa }}
+      native_ack: ${{ steps.cfg.outputs.native_ack }}
+      pkg_format: ${{ steps.cfg.outputs.pkg_format }}
+      pkgbuild_sha: ${{ steps.cfg.outputs.pkgbuild_sha }}
+      linux_commit: ${{ steps.cfg.outputs.linux_commit }}
+      patches_sha: ${{ steps.cfg.outputs.patches_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -100,6 +107,7 @@ jobs:
           SRC_TAG: ${{ inputs.src_tag }}
           BUILDER_SUFFIX: ${{ inputs.builder_suffix }}
           NATIVE_ACK: ${{ inputs.native_ack }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/resolve-custom-build.py
 
   custom-kbuild:
@@ -124,6 +132,9 @@ jobs:
       PREEMPT_MODE: ${{ needs.resolve.outputs.preempt }}
       HZ_TICKS: ${{ needs.resolve.outputs.hz }}
       EXTRA_PATCHES: ${{ needs.resolve.outputs.patches }}
+      PKGBUILD_SHA: ${{ needs.resolve.outputs.pkgbuild_sha }}
+      LINUX_COMMIT: ${{ needs.resolve.outputs.linux_commit }}
+      PATCHES_SHA: ${{ needs.resolve.outputs.patches_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -166,6 +177,7 @@ jobs:
           name: pkg-custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}
           path: |
             out/
+            cell-status/
           retention-days: 14
           if-no-files-found: ignore
 
@@ -203,24 +215,21 @@ jobs:
             | sort -z | xargs -0 md5sum > MD5SUMS
           cat SHA256SUMS
 
-      - name: Release notes
+      - name: Release notes + provenance manifest
+        env:
+          RESOLVE_JSON: ${{ toJSON(needs.resolve.outputs) }}
+          INPUTS_JSON: ${{ toJSON(inputs) }}
         run: |
-          {
-            echo "## Custom CachyOS kernel ${{ needs.resolve.outputs.src_tag }}"
-            echo
-            echo "Manual build from commit \`${GITHUB_SHA::7}\` ([run #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
-            echo
-            echo "| Field | Value |"
-            echo "|---|---|"
-            echo "| Variant | \`${{ inputs.variant }}\` (\`${{ needs.resolve.outputs.pkgbuild_dir }}\`, scheduler \`${{ needs.resolve.outputs.scheduler }}\`) |"
-            echo "| Tuning | \`${{ inputs.cpu_tuning }}\` (\`-march=${{ needs.resolve.outputs.march }}\`, Kconfig \`${{ needs.resolve.outputs.kconfig_mode }}\` v${{ needs.resolve.outputs.isa_num }}) |"
-            echo "| Label | \`${{ needs.resolve.outputs.isa_label }}\` (\`uname -r\` suffix \`${{ needs.resolve.outputs.localversion }}\`) |"
-            echo "| LTO | \`${{ inputs.lto }}\` |"
-            echo "| Source | \`${{ needs.resolve.outputs.src_tag }}\` (GPG-verified) |"
-            echo
-            echo "Verify: \`sha256sum -c SHA256SUMS --ignore-missing\`."
-            echo "Unsigned kernel/modules: Secure Boot users must self-sign (\`contrib/sign-kernel-mok.sh\`). Keep a stock kernel as fallback."
-          } > release-notes.md
+          python3 scripts/render-release.py \
+            --mode custom \
+            --cells cells \
+            --out cells \
+            --notes release-notes.md \
+            --resolve "$RESOLVE_JSON" \
+            --inputs "$INPUTS_JSON" \
+            --workflow custom-kernel.yml
+          test -s cells/provenance.json || { echo "::error::provenance.json is empty" >&2; exit 1; }
+          test -s release-notes.md || { echo "::error::release-notes.md is empty" >&2; exit 1; }
           cat release-notes.md
 
       - name: Create custom release

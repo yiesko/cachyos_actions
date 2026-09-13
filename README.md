@@ -97,6 +97,29 @@ sha256sum -c SHA256SUMS --ignore-missing  # the file covers the whole
                                           # release: missing = not downloaded, not corrupt
 ```
 
+### Verifying a release (veracity · trust · origin)
+
+Every release (weekly or custom) ships a `provenance.json` manifest next
+to the packages — the machine-readable backing for every claim in the
+release notes. Verify any sentence there against it:
+
+| Claim in the notes | Where to check it |
+|---|---|
+| Variant / scheduler / base tag | `variants.<id>.src_tag` + per-cell `pkgbuild_dir`, `scheduler` |
+| Exact upstream commits | `variants.<id>.linux_commit` (`CachyOS/linux` tag), `.pkgbuild_sha` (`linux-cachyos` PKGBUILD), `.patches_sha` (`kernel-patches` series); per-cell `upstream.upstream_head` for Arch cells |
+| “GPG-verified” source | per-cell `source`: tarball URL + `tarball_sha256` + `gpg_verify` outcome. Keys are CachyOS's published ones, as declared in the upstream PKGBUILD `validpgpkeys`: `E18447AC…B63C4` (Eric Naim) and `E8B9AA39…654FE` (Peter Jung). Verification is strict — a failed check aborts the cell |
+| Patches applied | per-cell `patches[]`: exact `kernel-patches` path + SHA256 + result. Note: patches are served over TLS, not GPG-signed upstream |
+| Kernel config | per-cell `config`: base/final `.config` SHA256 + `kernelrelease` + toggles (scheduler, ISA, HZ, preempt, LTO) |
+| Toolchain / runner | per-cell `toolchain` (gcc/clang/rustc/bindgen) + `runner` + `built_at_utc` |
+| Which file came from which cell | per-cell `artifacts[]` + top-level `artifacts[]` (name, SHA256, size) |
+| Build outcome per cell | `statuses` (`ok` / `fail:<step>`) + `cells[]` detail |
+
+Honest limits (also stated in each release): Arch cells build via
+`makepkg --skippgpcheck`, so the GPG tarball guarantee covers the
+kbuild (`.deb`/`.rpm`) path; kernels ship **unsigned** (self-sign for
+Secure Boot); `SHA256SUMS` proves integrity only as far as you trust
+the release publication itself.
+
 **Fedora**
 
 ```sh

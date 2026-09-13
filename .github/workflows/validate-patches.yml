@@ -44,7 +44,7 @@ jobs:
           shellcheck -x scripts/*.sh
 
       - name: Python compile check
-        run: python3 -m py_compile scripts/generate-matrix.py scripts/resolve-custom-build.py
+        run: python3 -m py_compile scripts/generate-matrix.py scripts/resolve-custom-build.py scripts/render-release.py
 
       - name: Config YAML sanity + cross-check against live PKGBUILDs
         run: |

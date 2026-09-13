@@ -100,6 +100,100 @@ def resolve_kernel_version(pkgbuild_dir: str = "linux-cachyos-bore") -> tuple[st
     return f"{major}.{minor}", f"cachyos-{major}.{minor}-{tagrel}"
 
 
+def major_minor_of_tag(tag: str) -> str:
+    """Derive the kernel-patches series (major.minor) from a source tag.
+
+    Handles stable (cachyos-7.2.0-1 -> 7.2) and RC (cachyos-7.2-rc7-1 -> 7.2).
+    Returns "" when the tag shape is unrecognized.
+    """
+    base = (tag or "").removeprefix("cachyos-")
+    base = base.split("-")[0] if "-" in base else base  # 7.2.0 / 7.2
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base):
+        return base.rsplit(".", 1)[0]
+    if re.fullmatch(r"[0-9]+\.[0-9]+", base):
+        return base
+    return ""
+
+
+def gh_api_get_json(url: str, timeout: int = 15):
+    """GET a GitHub API URL, returning parsed JSON or None on ANY failure.
+
+    Uses GITHUB_TOKEN/GT_TOKEN when present (raises the rate limit from
+    60 to 5000 req/h); unauthenticated runners share the small quota, so
+    every caller must treat None as "unknown", never fatal.
+    """
+    try:
+        headers = {"User-Agent": "cachyos-matrix-script",
+                   "Accept": "application/vnd.github+json"}
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+    except Exception:  # noqa: BLE001 - best effort by design
+        return None
+
+
+def resolve_provenance(pkgbuild_dir: str, src_tag: str) -> dict:
+    """Best-effort upstream commit SHAs for one variant's sources.
+
+    Never raises: any lookup failure yields "unknown" for that field so a
+    flaky API or rate limit degrades provenance detail without failing
+    the build. Fields:
+      pkgbuild_sha   commit that last touched <dir>/PKGBUILD (or HEAD)
+      linux_commit   commit the CachyOS/linux <src_tag> points at
+      patches_sha    HEAD of cachyos/kernel-patches for the tag's series
+    plus the browsable URLs needed to verify each one.
+    """
+    prov = {
+        "pkgbuild_dir": pkgbuild_dir,
+        "pkgbuild_sha": "unknown",
+        "pkgbuild_url": (f"https://github.com/CachyOS/linux-cachyos/tree/master/{pkgbuild_dir}"),
+        "src_tag": src_tag,
+        "linux_commit": "unknown",
+        "linux_release_url": (f"https://github.com/CachyOS/linux/releases/tag/{src_tag}" if src_tag else ""),
+        "series": major_minor_of_tag(src_tag),
+        "patches_sha": "unknown",
+        "patches_url": "",
+    }
+    if prov["series"]:
+        prov["patches_url"] = (f"https://github.com/cachyos/kernel-patches/tree/master/{prov['series']}")
+    if not src_tag:
+        return prov  # offline mode: URLs only
+
+    commits = gh_api_get_json(
+        f"https://api.github.com/repos/CachyOS/linux-cachyos/commits"
+        f"?path={pkgbuild_dir}/PKGBUILD&per_page=1&sha=master")
+    if isinstance(commits, list) and commits and isinstance(commits[0], dict):
+        prov["pkgbuild_sha"] = commits[0].get("sha", "unknown") or "unknown"
+    if prov["pkgbuild_sha"] == "unknown":
+        head = gh_api_get_json("https://api.github.com/repos/CachyOS/linux-cachyos/commits/master")
+        if isinstance(head, dict) and head.get("sha"):
+            prov["pkgbuild_sha"] = head["sha"]
+
+    ref = gh_api_get_json(f"https://api.github.com/repos/CachyOS/linux/git/ref/tags/{src_tag}")
+    if isinstance(ref, dict) and isinstance(ref.get("object"), dict):
+        obj = ref["object"]
+        if obj.get("type") == "tag" and obj.get("sha"):
+            tag_obj = gh_api_get_json(
+                f"https://api.github.com/repos/CachyOS/linux/git/tags/{obj['sha']}")
+            if isinstance(tag_obj, dict) and isinstance(tag_obj.get("object"), dict):
+                prov["linux_commit"] = tag_obj["object"].get("sha", "unknown") or "unknown"
+            else:
+                prov["linux_commit"] = obj["sha"]
+        elif obj.get("sha"):
+            prov["linux_commit"] = obj["sha"]
+
+    if prov["series"]:
+        pcommits = gh_api_get_json(
+            f"https://api.github.com/repos/cachyos/kernel-patches/commits"
+            f"?path={prov['series']}&per_page=1&sha=master")
+        if isinstance(pcommits, list) and pcommits and isinstance(pcommits[0], dict):
+            prov["patches_sha"] = pcommits[0].get("sha", "unknown") or "unknown"
+    return prov
+
+
 def fetch_last_manifest(repo: str) -> tuple[str, dict | None]:
     """Fetch versions.json from the repo's latest stable release.
 
@@ -155,6 +249,9 @@ def main():
     parser.add_argument("--build-lto", action="store_true",
                         help="whole-run ThinLTO for kbuild cells (legacy input mode; "
                              "disables the per-variant LTO duplicates)")
+    parser.add_argument("--skip-provenance", action="store_true",
+                        help="don't query upstream commit SHAs (offline testing or "
+                             "tight API quota; provenance fields become 'unknown')")
     args = parser.parse_args()
 
     if args.version_only:
@@ -192,6 +289,8 @@ def main():
     tag_cache: dict[str, str] = {}
     # variant id -> resolved src_tag, for the freshness gate below.
     variant_tags: dict[str, str] = {}
+    # pkgbuild_dir -> best-effort upstream SHAs (see resolve_provenance).
+    prov_cache: dict[str, dict] = {}
 
     for variant in variants_cfg["variants"]:
         if not variant.get("enabled", False):
@@ -214,6 +313,14 @@ def main():
         else:
             src_tag = ""
         variant_tags[variant["id"]] = src_tag
+
+        if args.skip_version_resolution or args.skip_provenance:
+            prov = resolve_provenance(pbd, "")
+            prov["src_tag"] = src_tag
+        else:
+            if pbd not in prov_cache:
+                prov_cache[pbd] = resolve_provenance(pbd, src_tag)
+            prov = prov_cache[pbd]
 
         floor = RANK[variant.get("min_isa", "v1")]
 
@@ -241,6 +348,9 @@ def main():
                 "lto": base_lto,
                 "suffix": "" if base_lto == "none" else f"-{base_lto}",
                 "src_tag": src_tag,
+                "pkgbuild_sha": prov.get("pkgbuild_sha", "unknown"),
+                "linux_commit": prov.get("linux_commit", "unknown"),
+                "patches_sha": prov.get("patches_sha", "unknown"),
                 "isa": isa["id"],
                 "isa_num": isa["isa_num"],
                 "march": isa["march"],
@@ -356,9 +466,34 @@ def main():
             series.append(_base)
     series_str = ", ".join(series) if series else kernel_version
 
+    # Per-variant upstream provenance (tag -> commit SHAs + browsable URLs)
+    # for the release manifest. Keyed by variant id; duplicates (two cells
+    # of one variant) collapse to a single entry.
+    provenance_map: dict[str, dict] = {}
+    for variant in variants_cfg["variants"]:
+        if not variant.get("enabled", False):
+            continue
+        if wanted_variants and variant["id"] not in wanted_variants:
+            continue
+        if variant["id"] in provenance_map:
+            continue
+        tag = variant_tags.get(variant["id"], "")
+        if args.skip_version_resolution or args.skip_provenance:
+            prov = resolve_provenance(variant["pkgbuild_dir"], "")
+            prov["src_tag"] = tag
+        else:
+            prov = prov_cache.get(variant["pkgbuild_dir"]) or resolve_provenance(
+                variant["pkgbuild_dir"], tag)
+        prov = dict(prov)
+        prov["variant"] = variant["id"]
+        prov["scheduler"] = variant.get("scheduler", "")
+        prov["patches"] = list(variant.get("patches", []))
+        provenance_map[variant["id"]] = prov
+
     lines = [
         f"matrix_arch={json.dumps(matrix_arch)}\n",
         f"matrix_kbuild={json.dumps(matrix_kbuild)}\n",
+        f"provenance_map={json.dumps(provenance_map)}\n",
         f"kernel_version={kernel_version}\n",
         f"src_tag={src_tag}\n",
         f"series={series_str}\n",

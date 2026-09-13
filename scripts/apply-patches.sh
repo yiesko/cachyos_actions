@@ -19,6 +19,13 @@ shift 2
 
 PATCHSRC="https://raw.githubusercontent.com/cachyos/kernel-patches/master/${MAJOR}"
 
+# Provenance record: one TSV line per patch (path, sha256, url, result).
+# PROVENANCE_RECORD may point elsewhere (cell WORKDIR); default is the
+# parent of the source tree (prepare-kernel-source.sh WORKDIR layout).
+# Best-effort: recording must never fail the build.
+PROVENANCE_RECORD="${PROVENANCE_RECORD:-$(pwd)/../applied-patches.tsv}"
+: > "$PROVENANCE_RECORD" 2>/dev/null || true
+
 if [ "$#" -eq 0 ]; then
   echo "No extra patches declared for this variant - base tarball used as-is."
   exit 0
@@ -44,13 +51,20 @@ for p in "$@"; do
   # URL, not a bare curl error.
   if ! curl -fsSL --retry 8 --retry-delay 10 --retry-max-time 300 --retry-all-errors "${PATCHSRC}/${p}" -o "$tmp_patch"; then
     echo "FAIL: $fname (download failed: ${PATCHSRC}/${p})" >&2
+    printf '%s\t%s\t%s\t%s\n' "$p" "unknown" "${PATCHSRC}/${p}" "download-failed" >> "$PROVENANCE_RECORD" 2>/dev/null || true
     failed=1
     continue
   fi
+  patch_sha="unknown"
+  if command -v sha256sum >/dev/null 2>&1; then
+    patch_sha="$(sha256sum "$tmp_patch" | awk '{print $1}')"
+  fi
   if patch "${FLAGS[@]}" < "$tmp_patch"; then
     echo "OK: $fname"
+    printf '%s\t%s\t%s\t%s\n' "$p" "$patch_sha" "${PATCHSRC}/${p}" "applied" >> "$PROVENANCE_RECORD" 2>/dev/null || true
   else
     echo "FAIL: $fname (patch rejected - upstream drift? check kernel-patches ${MAJOR} series)" >&2
+    printf '%s\t%s\t%s\t%s\n' "$p" "$patch_sha" "${PATCHSRC}/${p}" "rejected" >> "$PROVENANCE_RECORD" 2>/dev/null || true
     failed=1
   fi
 done
