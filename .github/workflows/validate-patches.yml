@@ -44,7 +44,7 @@ jobs:
           shellcheck -x scripts/*.sh
 
       - name: Python compile check
-        run: python3 -m py_compile scripts/generate-matrix.py
+        run: python3 -m py_compile scripts/generate-matrix.py scripts/resolve-custom-build.py
 
       - name: Config YAML sanity + cross-check against live PKGBUILDs
         run: |
@@ -77,6 +77,17 @@ jobs:
               assert isinstance(v.get("patches", []), list), \
                   f"{v.get('id')}: patches must be a list"
           print(f"{len(cfg['variants'])} variants declared; folders unique")
+
+          tun = yaml.safe_load(open("config/cpu-tunings.yml"))
+          tids = [t["id"] for t in tun["tunings"]]
+          assert len(tids) == len(set(tids)), "duplicate tuning id"
+          assert len(tids) >= 10, "tuning list unexpectedly small"
+          for t in tun["tunings"]:
+              assert t["id"] == t["id"].lower() and " " not in t["id"], f"bad tuning id {t['id']!r}"
+              assert t["march"] == t["march"].lower() and " " not in t["march"], f"bad march {t['march']!r}"
+              assert t["base_isa"] in ("v1", "v2", "v3", "v4"), f"bad base_isa {t['base_isa']!r}"
+              assert t.get("kconfig", "generic") in ("generic", "native", "zen4"), f"bad kconfig {t.get('kconfig')!r}"
+          print(f"{len(tids)} cpu tunings declared; ids unique")
           PY
 
   resolve-variants:

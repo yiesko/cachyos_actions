@@ -10,8 +10,15 @@
 # kernel's generated spec fine.
 #
 # Required env: VARIANT, PKGBUILD_DIR, SCHEDULER, ISA_NUM, MARCH
-# Optional env: SRC_TAG, USE_LTO, CACHY_CONFIG, PREEMPT_MODE,
-#               EXTRA_PATCHES, CCACHE_DIR, CCACHE_MAXSIZE
+# Optional env: SRC_TAG, USE_LTO, CACHY_CONFIG, PREEMPT_MODE, HZ_TICKS,
+#               KCONFIG_MODE, ISA_LABEL, PKG_FORMAT, EXTRA_PATCHES,
+#               CCACHE_DIR, CCACHE_MAXSIZE
+#   ISA_NUM stays the Kconfig selector (1..4, passed to prepare/configure).
+#   ISA_LABEL is the human/package label (default "v<ISA_NUM>", custom e.g.
+#     "v2-ivybridge"): it drives LOCALVERSION/ISA passed to package-*.sh so
+#     tuned builds never collide with generic ones. Lowercase, dpkg-safe.
+#   PKG_FORMAT=all|deb|rpm (default all): custom single builds may want
+#     only one family; weekly matrix always builds both.
 set -euo pipefail
 
 : "${VARIANT:?}"; : "${PKGBUILD_DIR:?}"; : "${SCHEDULER:?}"
@@ -28,11 +35,25 @@ case "${USE_LTO:-none}" in
   thin|thin-dist|full) _lto_suffix="-${USE_LTO}" ;;
   *) echo "error: unknown USE_LTO value: ${USE_LTO:-}" >&2; exit 1 ;;
 esac
-_effective_localversion="-${VARIANT}-${ISA_NUM:+v}${ISA_NUM:-}${_lto_suffix}${BUILDER_SUFFIX--yieskow}"
+# Builder tag auto-normalization: bare `yieskow` -> `-yieskow` so uname -r
+# always carries it after the config suffixes; empty stays empty (opt-out).
+# NOTE: ${VAR-default} (no colon) so BUILDER_SUFFIX="" truly disables.
+BUILDER_SUFFIX="${BUILDER_SUFFIX--yieskow}"
+if [[ -n "$BUILDER_SUFFIX" && "$BUILDER_SUFFIX" != [-+._]* ]]; then
+  BUILDER_SUFFIX="-$BUILDER_SUFFIX"
+fi
+export BUILDER_SUFFIX
+_effective_localversion="-${VARIANT}-${ISA_LABEL:-${ISA_NUM:+v}${ISA_NUM:-}}${_lto_suffix}${BUILDER_SUFFIX}"
 if [[ "$_effective_localversion" == *[A-Z]* ]]; then
   echo "error: LOCALVERSION '$_effective_localversion' contains uppercase - dpkg package names must be lowercase." >&2
   exit 1
 fi
+if [[ "${_effective_localversion}" == *" "* ]]; then
+  echo "error: LOCALVERSION '$_effective_localversion' contains spaces." >&2
+  exit 1
+fi
+# ISA label for the packaging passes: weekly "vN", custom "vN-tuning".
+ISA_LABEL="${ISA_LABEL:-v${ISA_NUM}}"
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPTS_DIR")"
@@ -100,6 +121,7 @@ SRC_TAG="${SRC_TAG:-}" \
 PKGBUILD_DIR="$PKGBUILD_DIR" \
 SCHEDULER="$SCHEDULER" \
 ISA_NUM="$ISA_NUM" \
+KCONFIG_MODE="${KCONFIG_MODE:-generic}" \
 bash "${SCRIPTS_DIR}/prepare-kernel-source.sh"
 
 SRCDIR="$(find "${ROOT_DIR}/kernel-src" -maxdepth 1 -mindepth 1 -type d -name 'cachyos-*' -print -quit)"
@@ -121,13 +143,25 @@ CELL_ENV=(
   GITHUB_WORKSPACE="${GITHUB_WORKSPACE:-$ROOT_DIR}"
 )
 
-echo "=== Packaging pass 1/2: .deb ==="
-env "${CELL_ENV[@]}" ISA="v${ISA_NUM}" \
-  bash "${SCRIPTS_DIR}/package-deb.sh"
-
-echo "=== Packaging pass 2/2: .rpm (tree already built - fast) ==="
-env "${CELL_ENV[@]}" ISA="v${ISA_NUM}" \
-  bash "${SCRIPTS_DIR}/package-rpm.sh"
+echo "=== Packaging (.deb/.rpm from one compile; PKG_FORMAT=${PKG_FORMAT:-all}) ==="
+case "${PKG_FORMAT:-all}" in
+  all|deb)
+    echo "=== Packaging pass: .deb ==="
+    env "${CELL_ENV[@]}" ISA="$ISA_LABEL" \
+      bash "${SCRIPTS_DIR}/package-deb.sh"
+    ;;
+esac
+case "${PKG_FORMAT:-all}" in
+  all|rpm)
+    echo "=== Packaging pass: .rpm (tree already built - fast) ==="
+    env "${CELL_ENV[@]}" ISA="$ISA_LABEL" \
+      bash "${SCRIPTS_DIR}/package-rpm.sh"
+    ;;
+esac
+case "${PKG_FORMAT:-all}" in
+  all|deb|rpm) : ;;
+  *) echo "error: unknown PKG_FORMAT: ${PKG_FORMAT:-}" >&2; exit 1 ;;
+esac
 
 OUT_DIR="${GITHUB_WORKSPACE:-$ROOT_DIR}/out"
 shopt -s nullglob

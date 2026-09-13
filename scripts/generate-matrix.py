@@ -8,7 +8,8 @@ Every enabled variant is crossed with every ISA level it supports
 the kbuild job consume DIFFERENT matrices from the same cells: Arch
 builds each cell once (makepkg pins LTO per PKGBUILD, no per-cell
 override possible), while kbuild additionally gets ThinLTO+FullLTO
-duplicate cells for --lto-variants (default: the flagship), each with a
+duplicate cells for --lto-variants (default: the 6 desktop variants:
+cachyos, bore, eevdf, rt-bore, deckify, rc), each with a
 name suffix so packages never collide (`-thin` / `-full`).
 
 This also resolves, PER VARIANT, the exact source tag each folder's live
@@ -147,7 +148,8 @@ def main():
                         help="bypass the freshness gate (rebuild even if unchanged)")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
                         help="owner/repo for the last-release manifest lookup")
-    parser.add_argument("--lto-variants", default="cachyos",
+    parser.add_argument("--lto-variants",
+                        default="cachyos,cachyos-bore,cachyos-eevdf,cachyos-rt-bore,cachyos-deckify,cachyos-rc",
                         help="comma-separated variant ids gaining extra ThinLTO+Full "
                              "kbuild cells (Arch excluded: makepkg pins LTO per PKGBUILD)")
     parser.add_argument("--build-lto", action="store_true",

@@ -1,0 +1,274 @@
+# config/cpu-tunings.yml
+#
+# Curated per-CPU compiler tunings for the manual `custom-kernel.yml` workflow.
+# Weekly `weekly-build.yml` stays on generic x86-64-vN only (see
+# config/isa-levels.yml); this file exists so a human can pick
+# `sandybridge / ivybridge / haswell / znver3 / ...` without typing a raw
+# `-march=` string and without breaking Kconfig.
+#
+# SOURCES (public, checkable):
+#   - GCC x86 options: `gcc --help=target -Q --help=target` /
+#     https://gcc.gnu.org/onlinedocs/gcc/x86-Options.html
+#     (`-march=<name>` values used in `march:` below are GCC-canonical;
+#     `bulldozer` is NOT a valid `-march=` on modern GCC -> use `bdver1`, etc.)
+#   - x86-64 psABI levels: https://en.wikipedia.org/wiki/X86-64
+#     (v1 baseline, v2 Nehalem+, v3 Haswell+, v4 AVX-512).
+#   - CachyOS upstream: since 6.15 `_processor_opt` is only
+#     `generic | generic_v1..v4 | zen4 | native`
+#     (see CachyOS/linux-cachyos#467 + commit 4e7cb15 dropping
+#     `auto-cpu-optimization.sh` / `CONFIG_M*`). Per-uarch Kconfig no
+#     longer exists, so tuning here is `-march=` (KCFLAGS) on top of a
+#     generic Kconfig base (`base_isa`). Only `native`/`zen4` keep an
+#     authentic Kconfig mode (`kconfig: native|zen4`); everything else is
+#     `kconfig: generic` + tuned `-march=`.
+#
+# HOW TO ADD A NEW CPU (e.g. a future `znver6`):
+#   1. Confirm `gcc -march=<march> -c` works on ubuntu-24.04 (else the
+#      custom job fails fast in `set-march.sh` with the toolchain floor).
+#   2. Pick `base_isa`: lowest psABI level the CPU runs
+#      (v2 for pre-AVX2, v3 for AVX2, v4 for AVX-512 with VL/BW/CD/DQ).
+#   3. Append an entry below (`id` lowercase, no spaces, dpkg-safe) - no
+#      workflow changes needed (`custom-kernel.yml` validates against this
+#      file; unknown ids fail fast).
+#
+# `id` is what the user picks + what lands in package names
+# (`v3-haswell`, `v2-ivybridge`, ...). `march` is the exact GCC `-march=`
+# value. `base_isa` drives Kconfig (`GENERIC_CPU + X86_64_VERSION`).
+
+tunings:
+  # --- generic psABI (same as weekly) ---------------------------------
+  - id: generic
+    march: x86-64
+    base_isa: v1
+    kconfig: generic
+    vendor: generic
+    notes: "Baseline x86-64, runs everywhere. Same as weekly v1."
+
+  - id: x86-64-v2
+    march: x86-64-v2
+    base_isa: v2
+    kconfig: generic
+    vendor: generic
+    notes: "Nehalem / Bulldozer era+ (SSE4.2, POPCNT)."
+
+  - id: x86-64-v3
+    march: x86-64-v3
+    base_isa: v3
+    kconfig: generic
+    vendor: generic
+    notes: "Haswell / Excavator era+ (AVX2, BMI2, FMA). Recommended default."
+
+  - id: x86-64-v4
+    march: x86-64-v4
+    base_isa: v4
+    kconfig: generic
+    vendor: generic
+    notes: "AVX-512 (Skylake-X / Zen4+). Smallest install base."
+
+  - id: native
+    march: native
+    base_isa: v3
+    kconfig: native
+    vendor: generic
+    notes: "Compiler autodetects the BUILD host (X86_NATIVE_CPU). NOT reproducible: binary depends on which runner picked the job. Requires explicit ack."
+
+  # --- Intel, pre-AVX2 (v2 floor) --------------------------------------
+  - id: nehalem
+    march: nehalem
+    base_isa: v2
+    kconfig: generic
+    vendor: intel
+    notes: "2008 Core i7 1st gen."
+
+  - id: westmere
+    march: westmere
+    base_isa: v2
+    kconfig: generic
+    vendor: intel
+    notes: "2010 shrink of Nehalem."
+
+  - id: sandybridge
+    march: sandybridge
+    base_isa: v2
+    kconfig: generic
+    vendor: intel
+    notes: "2011 Core iX 2nd gen (AVX, no AVX2)."
+
+  - id: ivybridge
+    march: ivybridge
+    base_isa: v2
+    kconfig: generic
+    vendor: intel
+    notes: "2012 Core iX 3rd gen (AVX, no AVX2). Good pick for Ivy Bridge PCs."
+
+  - id: silvermont
+    march: silvermont
+    base_isa: v2
+    kconfig: generic
+    vendor: intel
+    notes: "Bay Trail / Avoton low-power."
+
+  - id: goldmont
+    march: goldmont
+    base_isa: v2
+    kconfig: generic
+    vendor: intel
+    notes: "Apollo Lake / Denverton low-power."
+
+  # --- Intel, AVX2 (v3 floor) ------------------------------------------
+  - id: haswell
+    march: haswell
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "2013 Core iX 4th gen (AVX2, BMI2, FMA). Classic desktop tuning."
+
+  - id: broadwell
+    march: broadwell
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "2015 Core iX 5th gen."
+
+  - id: skylake
+    march: skylake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "2015 Core iX 6th gen (no AVX-512 on client)."
+
+  - id: cascadelake
+    march: cascadelake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "Xeon Scalable 2nd gen."
+
+  - id: cooperlake
+    march: cooperlake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "Xeon Scalable 3rd gen (4-socket)."
+
+  - id: cannonlake
+    march: cannonlake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "Rare 10nm client (i3-8121U)."
+
+  - id: icelake-client
+    march: icelake-client
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "2019 mobile (Sunny Cove, AVX-512 without VL quirk note)."
+
+  - id: tigerlake
+    march: tigerlake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "2020 mobile (Willow Cove)."
+
+  - id: alderlake
+    march: alderlake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "12th gen hybrid (P+E). No AVX-512 (fused off) -> v3."
+
+  - id: rocketlake
+    march: rocketlake
+    base_isa: v3
+    kconfig: generic
+    vendor: intel
+    notes: "11th gen desktop (Cypress Cove)."
+
+  # --- Intel, AVX-512 (v4 floor) ---------------------------------------
+  - id: skylake-avx512
+    march: skylake-avx512
+    base_isa: v4
+    kconfig: generic
+    vendor: intel
+    notes: "Skylake-X / Skylake-SP (AVX-512F/CD/BW/DQ/VL)."
+
+  - id: icelake-server
+    march: icelake-server
+    base_isa: v4
+    kconfig: generic
+    vendor: intel
+    notes: "Xeon Scalable 3rd gen (Ice Lake-SP)."
+
+  - id: sapphirerapids
+    march: sapphirerapids
+    base_isa: v4
+    kconfig: generic
+    vendor: intel
+    notes: "Xeon Scalable 4th gen."
+
+  # --- AMD, pre-AVX2 (v2 floor) ----------------------------------------
+  - id: bulldozer
+    march: bdver1
+    base_isa: v2
+    kconfig: generic
+    vendor: amd
+    notes: "FX Zambezi (bdver1). Use bdver1: `bulldozer` is not a valid -march= on modern GCC."
+
+  - id: piledriver
+    march: bdver2
+    base_isa: v2
+    kconfig: generic
+    vendor: amd
+    notes: "FX Vishera / A10 Trinity (bdver2)."
+
+  - id: steamroller
+    march: bdver3
+    base_isa: v2
+    kconfig: generic
+    vendor: amd
+    notes: "A10 Kaveri (bdver3)."
+
+  - id: excavator
+    march: bdver4
+    base_isa: v2
+    kconfig: generic
+    vendor: amd
+    notes: "Carrizo / Bristol Ridge (bdver4)."
+
+  # --- AMD Zen (v3 floor, except Zen4+ -> v4) ---------------------------
+  - id: zen
+    march: znver1
+    base_isa: v3
+    kconfig: generic
+    vendor: amd
+    notes: "Ryzen 1000 (Zen, AVX2)."
+
+  - id: zen2
+    march: znver2
+    base_isa: v3
+    kconfig: generic
+    vendor: amd
+    notes: "Ryzen 3000 (Zen 2)."
+
+  - id: zen3
+    march: znver3
+    base_isa: v3
+    kconfig: generic
+    vendor: amd
+    notes: "Ryzen 5000 (Zen 3)."
+
+  - id: zen4
+    march: znver4
+    base_isa: v4
+    kconfig: zen4
+    vendor: amd
+    notes: "Ryzen 7000 (Zen 4, AVX-512). Authentic MZEN4 Kconfig like upstream `_processor_opt=zen4`."
+
+  - id: zen5
+    march: znver5
+    base_isa: v4
+    kconfig: generic
+    vendor: amd
+    notes: "Ryzen 9000 (Zen 5). Needs GCC>=14 / recent Clang; fails fast on older toolchains."

@@ -146,7 +146,7 @@ V, I = re.escape(variant), re.escape(isa)
 # suffixes (e.g. _thin, _yieskoW) while still matching older suffix-less
 # releases.
 TAIL_RPM = r"(_[A-Za-z0-9]+)*"
-TAIL_DEB = r"(-[A-Za-z0-9]+)?"
+TAIL_DEB = r"(-[A-Za-z0-9]+)*"
 Vr = re.escape(variant.replace("-", "_"))
 pats = []
 if fmt == "rpm":

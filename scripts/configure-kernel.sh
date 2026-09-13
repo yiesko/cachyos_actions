@@ -18,6 +18,13 @@
 #        PREEMPT_MODE=full|lazy (default full; rt schedulers ignore it)
 #        HZ_TICKS=100|250|300|500|600|750|1000 (default 1000; per-variant
 #                 `_HZ_ticks` — the server folder ships 300)
+#        KCONFIG_MODE=generic|native|zen4 (default generic).
+#                 generic: GENERIC_CPU + X86_64_VERSION=ISA_NUM (weekly matrix
+#                   + most custom tunings: tuning is `-march=` only, since
+#                   upstream dropped per-uarch CONFIG_M* in 6.15).
+#                 native:  X86_NATIVE_CPU (custom `native` tuning).
+#                 zen4:    MZEN4 (custom `zen4` tuning, like upstream
+#                   `_processor_opt=zen4`). ISA_NUM is ignored there.
 set -euo pipefail
 
 SRCDIR="${1:?}"; PKGBUILD_DIR="${2:?}"; SCHEDULER="${3:?}"; ISA_NUM="${4:?}"
@@ -63,11 +70,28 @@ case "$SCHEDULER" in
 esac
 echo "Selected ${SCHEDULER^^} scheduler."
 
-# ISA level - CONFIG_GENERIC_CPU + CONFIG_X86_64_VERSION is exactly
-# what `_processor_opt=generic_vN` sets in the PKGBUILD.
-cfg -e GENERIC_CPU -d MZEN4 -d X86_NATIVE_CPU \
-  --set-val X86_64_VERSION "$ISA_NUM"
-echo "Selected x86-64-v${ISA_NUM} (or generic, for v1)."
+# CPU tuning Kconfig - CONFIG_GENERIC_CPU + CONFIG_X86_64_VERSION is exactly
+# what `_processor_opt=generic_vN` sets in the PKGBUILD. Custom builds decouple
+# this from `-march=`: tuning like `haswell`/`znver3` has no CONFIG_M* anymore
+# (dropped upstream in 6.15), so Kconfig stays generic at the tuning's base
+# ISA while KCFLAGS carries the real tuning. Only `native`/`zen4` use their
+# authentic modes (mirroring `_processor_opt=native|zen4`).
+case "${KCONFIG_MODE:-generic}" in
+  generic)
+    cfg -e GENERIC_CPU -d MZEN4 -d X86_NATIVE_CPU \
+      --set-val X86_64_VERSION "$ISA_NUM"
+    echo "Selected x86-64-v${ISA_NUM} (or generic, for v1)."
+    ;;
+  native)
+    cfg -d GENERIC_CPU -d MZEN4 -e X86_NATIVE_CPU
+    echo "Selected native CPU optimization (X86_NATIVE_CPU; build host dependent)."
+    ;;
+  zen4)
+    cfg -d GENERIC_CPU -e MZEN4 -d X86_NATIVE_CPU
+    echo "Selected Zen4 CPU optimization (MZEN4)."
+    ;;
+  *) echo "unknown KCONFIG_MODE: ${KCONFIG_MODE:-}" >&2; exit 1 ;;
+esac
 
 # Tick rate: mirrors the `case "$_HZ_ticks" in` block in prepare() -
 # per-variant `_HZ_ticks` default (1000 everywhere upstream except the

@@ -35,8 +35,13 @@ esac
 # (lowercase) tag; empty disables. NOTE: Arch packages cannot carry this
 # (makepkg uses the upstream PKGBUILD unmodified by design).
 # NOTE: ${VAR-default} (no colon) so that BUILDER_SUFFIX="" truly
-# disables instead of falling back to the default.
+# disables instead of falling back to the default. Bare `yieskow`
+# auto-becomes `-yieskow` (shared rule with run-kbuild-build.sh and
+# resolve-custom-build.py, weekly comme custom); empty stays empty.
 BUILDER_SUFFIX="${BUILDER_SUFFIX--yieskow}"
+if [[ -n "$BUILDER_SUFFIX" && "$BUILDER_SUFFIX" != [-+._]* ]]; then
+  BUILDER_SUFFIX="-$BUILDER_SUFFIX"
+fi
 export LOCALVERSION="-${VARIANT}-${ISA}${LTO_SUFFIX}${BUILDER_SUFFIX}"
 export KDEB_PKGVERSION="${KVER}${LOCALVERSION}-1"
 export KCFLAGS="-march=${MARCH}"

@@ -1,0 +1,234 @@
+name: Custom kernel build (manual tuning)
+
+# One-off manual build: pick variant x base ISA x CPU tuning x LTO.
+# Kbuild-only by design (.deb + .rpm from one compile): arbitrary tunings
+# like `ivybridge`/`haswell`/`znver3` have no Kconfig `CONFIG_M*` anymore
+# (dropped upstream in 6.15) and no `_processor_opt` in makepkg, so the
+# Arch path cannot express them. Kconfig stays generic at the tuning's
+# base ISA (except `native`/`zen4`, which use their authentic modes);
+# the real tuning is `-march=` (KCFLAGS).
+#
+# Cost: one kernel compile, 60-120+ min (Full LTO longer, may OOM).
+# Output: workflow artifacts always; stable per-build Release when
+# `publish_release=true` (default).
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Variant id from config/variants.yml (e.g. cachyos-bore)"
+        type: string
+        default: "cachyos-bore"
+      base_isa:
+        description: "Base psABI level for Kconfig (must match the tuning's floor)"
+        type: choice
+        options: [v1, v2, v3, v4]
+        default: v2
+      cpu_tuning:
+        description: "Tuning id from config/cpu-tunings.yml (e.g. ivybridge, haswell, zen3)"
+        type: string
+        default: "ivybridge"
+      lto:
+        description: "Compiler/LTO mode (none=GCC, thin/thin-dist/full=Clang+LLVM)"
+        type: choice
+        options: [none, thin, thin-dist, full]
+        default: thin
+      pkg_format:
+        description: "Package family (one compile serves both; pick one to skip a pass)"
+        type: choice
+        options: [all, deb, rpm]
+        default: all
+      src_tag:
+        description: "Exact CachyOS/linux tag (blank = resolve live per variant)"
+        type: string
+        default: ""
+      builder_suffix:
+        description: "Builder tag in uname -r (lowercase, e.g. -yieskow)"
+        type: string
+        default: "-yieskow"
+      native_ack:
+        description: "Required=yes when cpu_tuning=native (host-dependent build)"
+        type: choice
+        options: ['no', 'yes']
+        default: 'no'
+      publish_release:
+        description: "Create a per-build Release with checksums"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve custom build
+    runs-on: ubuntu-latest
+    outputs:
+      pkgbuild_dir: ${{ steps.cfg.outputs.pkgbuild_dir }}
+      scheduler: ${{ steps.cfg.outputs.scheduler }}
+      patches: ${{ steps.cfg.outputs.patches }}
+      cachy_config: ${{ steps.cfg.outputs.cachy_config }}
+      preempt: ${{ steps.cfg.outputs.preempt }}
+      hz: ${{ steps.cfg.outputs.hz }}
+      isa_num: ${{ steps.cfg.outputs.isa_num }}
+      march: ${{ steps.cfg.outputs.march }}
+      kconfig_mode: ${{ steps.cfg.outputs.kconfig_mode }}
+      isa_label: ${{ steps.cfg.outputs.isa_label }}
+      src_tag: ${{ steps.cfg.outputs.src_tag }}
+      localversion: ${{ steps.cfg.outputs.localversion }}
+      builder_suffix: ${{ steps.cfg.outputs.builder_suffix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet "pyyaml==6.0.3"
+
+      - name: Validate + resolve build env
+        id: cfg
+        env:
+          VARIANT: ${{ inputs.variant }}
+          BASE_ISA: ${{ inputs.base_isa }}
+          CPU_TUNING: ${{ inputs.cpu_tuning }}
+          USE_LTO: ${{ inputs.lto }}
+          PKG_FORMAT: ${{ inputs.pkg_format }}
+          SRC_TAG: ${{ inputs.src_tag }}
+          BUILDER_SUFFIX: ${{ inputs.builder_suffix }}
+          NATIVE_ACK: ${{ inputs.native_ack }}
+        run: python3 scripts/resolve-custom-build.py
+
+  custom-kbuild:
+    name: Custom ${{ inputs.variant }} ${{ needs.resolve.outputs.isa_label }} ${{ inputs.lto }}
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      VARIANT: ${{ inputs.variant }}
+      PKGBUILD_DIR: ${{ needs.resolve.outputs.pkgbuild_dir }}
+      SCHEDULER: ${{ needs.resolve.outputs.scheduler }}
+      ISA_NUM: ${{ needs.resolve.outputs.isa_num }}
+      MARCH: ${{ needs.resolve.outputs.march }}
+      KCONFIG_MODE: ${{ needs.resolve.outputs.kconfig_mode }}
+      ISA_LABEL: ${{ needs.resolve.outputs.isa_label }}
+      SRC_TAG: ${{ needs.resolve.outputs.src_tag }}
+      CCACHE_DIR: ${{ github.workspace }}/ccache
+      USE_LTO: ${{ inputs.lto }}
+      PKG_FORMAT: ${{ inputs.pkg_format }}
+      BUILDER_SUFFIX: ${{ needs.resolve.outputs.builder_suffix }}
+      CACHY_CONFIG: ${{ needs.resolve.outputs.cachy_config }}
+      PREEMPT_MODE: ${{ needs.resolve.outputs.preempt }}
+      HZ_TICKS: ${{ needs.resolve.outputs.hz }}
+      EXTRA_PATCHES: ${{ needs.resolve.outputs.patches }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Restore ccache (custom)
+        uses: actions/cache@v6
+        with:
+          path: ccache
+          # Tuning + LTO + tag in the key: objects for haswell must never
+          # poison znver3, nor GCC poison ThinLTO. No cross-tuning fallback
+          # on purpose (custom `native` is host-dependent).
+          key: ccache-custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}-${{ needs.resolve.outputs.src_tag }}
+          restore-keys: |
+            ccache-custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}-
+
+      - name: Cache rustup/cargo toolchain (bindgen)
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo
+            ~/.rustup
+          key: rust-toolchain-stable-v1
+
+      - name: Build .deb/.rpm from one compile
+        id: build
+        run: bash scripts/run-kbuild-build.sh
+
+      - name: Upload custom artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkg-custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}
+          path: |
+            out/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  release:
+    name: Publish custom release
+    needs: [resolve, custom-kbuild]
+    if: ${{ !cancelled() && inputs.publish_release == true && needs.custom-kbuild.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download custom artifact
+        uses: actions/download-artifact@v8
+        with:
+          pattern: pkg-custom-*
+          path: cells
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: cells
+        run: |
+          shopt -s nullglob
+          pkgs=(*.rpm *.deb)
+          shopt -u nullglob
+          if (( ${#pkgs[@]} == 0 )); then
+            echo "::error::no packages staged - refusing to create an empty release"
+            exit 1
+          fi
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'MD5SUMS' -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'MD5SUMS' -print0 \
+            | sort -z | xargs -0 md5sum > MD5SUMS
+          cat SHA256SUMS
+
+      - name: Release notes
+        run: |
+          {
+            echo "## Custom CachyOS kernel ${{ needs.resolve.outputs.src_tag }}"
+            echo
+            echo "Manual build from commit \`${GITHUB_SHA::7}\` ([run #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Variant | \`${{ inputs.variant }}\` (\`${{ needs.resolve.outputs.pkgbuild_dir }}\`, scheduler \`${{ needs.resolve.outputs.scheduler }}\`) |"
+            echo "| Tuning | \`${{ inputs.cpu_tuning }}\` (\`-march=${{ needs.resolve.outputs.march }}\`, Kconfig \`${{ needs.resolve.outputs.kconfig_mode }}\` v${{ needs.resolve.outputs.isa_num }}) |"
+            echo "| Label | \`${{ needs.resolve.outputs.isa_label }}\` (\`uname -r\` suffix \`${{ needs.resolve.outputs.localversion }}\`) |"
+            echo "| LTO | \`${{ inputs.lto }}\` |"
+            echo "| Source | \`${{ needs.resolve.outputs.src_tag }}\` (GPG-verified) |"
+            echo
+            echo "Verify: \`sha256sum -c SHA256SUMS --ignore-missing\`."
+            echo "Unsigned kernel/modules: Secure Boot users must self-sign (\`contrib/sign-kernel-mok.sh\`). Keep a stock kernel as fallback."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create custom release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}-${{ github.run_number }}"
+          shopt -s nullglob
+          files=(cells/*)
+          gh release create "$tag" \
+            --title "Custom ${{ inputs.variant }} ${{ needs.resolve.outputs.isa_label }} ${{ inputs.lto }} ($tag)" \
+            --notes-file release-notes.md \
+            --target "${{ github.sha }}" \
+            "${files[@]}"

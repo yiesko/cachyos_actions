@@ -11,7 +11,8 @@ name: Weekly kernel matrix (Arch / Debian / Fedora)
 #
 # Cost facts (GitHub Actions, 2026):
 #   - PUBLIC repos get unlimited Linux minutes -> this matrix is sized
-#     for that (~34 Arch cells + ~34 merged kbuild cells per week).
+#     for that (~34 Arch cells + ~82 kbuild cells per week, incl. 48
+#     ThinLTO/Full extras for the 6 desktop variants).
 #   - PRIVATE repos only get a few thousand free minutes per month;
 #     a single kernel compile is 60-120+ minutes, so running the full
 #     matrix privately will burn the quota in one run.
@@ -37,7 +38,11 @@ on:
       lto_variants:
         description: "Variants gaining extra ThinLTO+Full kbuild cells (Arch excluded: makepkg pins LTO)"
         type: string
-        default: "cachyos"
+        default: "cachyos,cachyos-bore,cachyos-eevdf,cachyos-rt-bore,cachyos-deckify,cachyos-rc"
+      builder_suffix:
+        description: "Builder tag in uname -r (blank = none; bare yieskow auto-becomes -yieskow)"
+        type: string
+        default: "-yieskow"
       force_rebuild:
         description: "Bypass the freshness gate (rebuild even if unchanged)"
         type: boolean
@@ -203,6 +208,7 @@ jobs:
       SCHEDULER: ${{ matrix.scheduler }}
       ISA_NUM: ${{ matrix.isa_num }}
       MARCH: ${{ matrix.march }}
+      BUILDER_SUFFIX: ${{ inputs.builder_suffix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

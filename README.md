@@ -27,7 +27,7 @@ published as installable GitHub Releases.
 
 ```text
 CachyOS source → variant definition → patch validation → kernel config
-       → kernel build (34 Arch + 42 kbuild cells, incl. LTO extras) → RPM / DEB / Arch
+       → kernel build (34 Arch + 82 kbuild cells, incl. ThinLTO/Full extras) → RPM / DEB / Arch
        → checksums + per-cell report in a stable GitHub Release
 ```
 
@@ -81,8 +81,9 @@ scheduler patch for its default, deckify applies BORE for the same
 scheduler value, and so on).
 
 That yields 34 ISA-level combinations (38 minus the 4 disabled BMQ
-cells) across 2 build jobs — 34 Arch cells + 42 kbuild cells (incl. 8
-flagship ThinLTO/Full extras) ≈ **76 builds per week** — sized for a
+cells) across 2 build jobs — 34 Arch cells + 82 kbuild cells (incl. 48
+ThinLTO/Full extras for the 6 desktop variants: cachyos, bore, eevdf,
+rt-bore, deckify, rc) ≈ **116 builds per week** — sized for a
 public repo's unlimited Linux minutes.
 
 ### 3. Install
@@ -230,8 +231,9 @@ validate-patches.yml  PR gate: shellcheck + patch dry-runs per scheduler, no com
   at build time using the exact same mapping as upstream PKGBUILDs.
 - Kernel configuration replicates upstream's `prepare()` toggles
   (scheduler, ISA level via `_processor_opt=generic_vN`, 1000 Hz, THP…).
-- Optional Clang ThinLTO/Full (`lto_variants`, default: flagship) as extra
-  kbuild cells next to the GCC ones, suffixed `-thin`/`-full` (plus your
+- Optional Clang ThinLTO/Full (`lto_variants`, default: the 6 desktop
+  variants `cachyos,cachyos-bore,cachyos-eevdf,cachyos-rt-bore,cachyos-deckify,cachyos-rc`)
+  as extra kbuild cells next to the GCC ones, suffixed `-thin`/`-full` (plus your
   builder tag, e.g. `7.2.4-cachyos-v3-thin-yieskow` in `uname -r`); the
   legacy `build_lto=true` flips the whole kbuild run to ThinLTO instead.
   The Arch path always builds at each PKGBUILD's own authentic LTO default
@@ -252,11 +254,12 @@ cron run it:
 | `variants` | comma-separated ids (blank = all enabled), e.g. `cachyos-bore` |
 | `isa_levels` | comma-separated levels, e.g. `v2,v3` (blank = all) |
 | `build_lto` | Clang ThinLTO for ALL kbuild cells (slower, memory-hungry; legacy whole-run mode) |
-| `lto_variants` | Variants gaining extra ThinLTO+Full kbuild cells alongside GCC (default: `cachyos`; Arch excluded — makepkg pins LTO per PKGBUILD) |
+| `lto_variants` | Variants gaining extra ThinLTO+Full kbuild cells alongside GCC (default: `cachyos,cachyos-bore,cachyos-eevdf,cachyos-rt-bore,cachyos-deckify,cachyos-rc`; Arch excluded — makepkg pins LTO per PKGBUILD) |
+| `builder_suffix` | Builder tag in `uname -r` (default `-yieskow`; blank = none; bare `yieskow` auto-becomes `-yieskow`; kbuild-only, Arch ignores) |
 | `publish_repo` | publish RPMs as a browsable DNF repo on GitHub Pages |
 | `force_rebuild` | bypass the freshness gate (rebuild even if unchanged) |
 
-**Freshness gate:** before burning ~13h of builds, `generate-matrix`
+**Freshness gate:** before burning ~18-20h of builds, `generate-matrix`
 compares every enabled variant's live source tag against `versions.json`
 from the latest stable release (published as an asset by every run).
 No upstream movement → build/release jobs skip with a `SKIP` note in the
@@ -264,9 +267,9 @@ run summary, and no empty release is created. Any moved variant (or a new
 one, or a missing/unreadable manifest) rebuilds the full matrix — fail
 open by design. Network cost of the check: 2 unauthenticated API calls.
 
-Cost facts: **the repo must be public** for the full matrix (76 kernel
-builds/week: 34 Arch cells + 42 kbuild cells, incl. 8 flagship ThinLTO/Full
-extras) — private repos get only a few thousand free Actions
+Cost facts: **the repo must be public** for the full matrix (116 kernel
+builds/week: 34 Arch cells + 82 kbuild cells, incl. 48 ThinLTO/Full
+extras for the 6 desktop variants) — private repos get only a few thousand free Actions
 minutes/month and one kernel compile takes 60–120 min. Per-job timeouts
 (350 min) sit under GitHub's hard 6-hour cap. First run after a change?
 Smoke-test one cell (`variants=cachyos-bore`, `isa_levels=v3`).
@@ -278,7 +281,7 @@ Smoke-test one cell (`variants=cachyos-bore`, `isa_levels=v3`).
 - Compilers: GCC >= 11 or Clang >= 12 for the v4 target
   (`-march=x86-64-v4`); ThinLTO cells add clang/lld/llvm.
 - Python 3.x + **PyYAML 6.0.3 pinned** in all workflows (bump by editing
-  the three `pip install` lines together); Rust stable (rustup on Ubuntu,
+  the four `pip install` lines together); Rust stable (rustup on Ubuntu,
   distro packages on Fedora) for `CONFIG_RUST` + bindgen.
 - Lint gate: shellcheck (apt) + `bash -n` + `py_compile`.
 - GitHub Actions versions float on majors and are kept current by
@@ -291,6 +294,32 @@ secrets `GPG_PRIVATE_KEY` + optional `GPG_PASSPHRASE`, and releases gain
 signed RPMs plus a published public key; the DNF repo enables
 `gpgcheck`. Without secrets nothing breaks — releases fall back to
 `SHA256SUMS` only.
+
+### Custom single build (manual tuning)
+
+Dispatch `.github/workflows/custom-kernel.yml` for one kernel with your
+exact CPU tuning — e.g. CachyOS `.rpm` `x86-64-v2` + ThinLTO tuned for
+`ivybridge`:
+
+| Input | Meaning |
+|---|---|
+| `variant` | id from `config/variants.yml`, e.g. `cachyos-bore` |
+| `base_isa` | `v1..v4` Kconfig base (must equal the tuning's floor) |
+| `cpu_tuning` | id from `config/cpu-tunings.yml`, e.g. `ivybridge`, `haswell`, `zen3` |
+| `lto` | `none` (GCC) \| `thin` \| `thin-dist` \| `full` (Clang+LLVM) |
+| `pkg_format` | `all` \| `deb` \| `rpm` (one compile serves both) |
+| `src_tag` | blank = resolve live per variant, or pin `cachyos-7.2.4-1` |
+| `builder_suffix` | lowercase tag in `uname -r` (default `-yieskow`) |
+| `publish_release` | create a `custom-<variant>-<label>-<run>` Release with checksums |
+
+Example label: `v2-ivybridge` → `uname -r` `7.2.4-cachyos-bore-v2-ivybridge-thin-yieskow`.
+Kbuild-only (`.deb/.rpm`): arbitrary tunings have no makepkg
+`_processor_opt` (upstream only knows `generic[_vN]/zen4/native` since
+6.15), so there is no Arch cell here. Kconfig stays generic at `base_isa`
+(except `native`→`X86_NATIVE_CPU`, `zen4`→`MZEN4`); the tuning itself is
+`-march=` — same sources/patches/config as weekly. `native` needs
+`native_ack=yes` (host-dependent, non-reproducible). New CPUs: append to
+`config/cpu-tunings.yml` (see its header) — no workflow changes needed.
 
 ---
 
@@ -329,8 +358,9 @@ Checked against CachyOS's live repos/docs/APIs rather than assumed:
   linux-next backports, OpenRGB, ACS override, NTSync — and, like COPR's
   server kernel, ours ticks at 300 Hz with lazy preemption. Differences
   are packaging choices: COPR publishes GCC *and* ThinLTO flavors
-  side-by-side (here ThinLTO is a `build_lto` dispatch input, Arch builds
-  at each PKGBUILD's authentic default), and COPR bundles the out-of-tree
+  side-by-side (here GCC+ThinLTO+Full ship side-by-side for the 6 desktop
+  variants via `lto_variants`, `build_lto=true` remains as legacy whole-run
+  ThinLTO mode; Arch builds at each PKGBUILD's authentic default), and COPR bundles the out-of-tree
   `v4l2loopback` module plus userland addons (cachyos-settings, scx-scheds,
   ananicy-cpp) — none of that ships here; pair these kernels with
   COPR-addons if you want it.
@@ -340,8 +370,9 @@ Checked against CachyOS's live repos/docs/APIs rather than assumed:
 - No APT or pacman repository hosting yet (DNF/Pages only); artifacts are
   Release assets for manual installs.
 - Unsigned kernels/modules by design — Secure Boot users must self-sign.
-- ThinLTO cells may OOM on memory-constrained runners; ccache hit rates
-  drop for LTO builds.
+- ThinLTO/Full cells (48 extras) may OOM on memory-constrained runners;
+  ccache hit rates drop for LTO builds; Full LTO links single-threaded,
+  slower and more memory-hungry than Thin for marginal gains.
 - The `cachyos-rc` series is inherently volatile: when upstream rebases
   the folder onto the next `-rc1`, one weekly run may fail until the
   matching patches land on that series.

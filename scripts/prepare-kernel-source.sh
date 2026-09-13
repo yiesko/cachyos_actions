@@ -14,6 +14,9 @@
 #   SCHEDULER      _cpusched value (see config/variants.yml header)
 #   ISA_NUM        1..4
 #   WORKDIR        where the tarball lands / tree is extracted
+# Optional env:
+#   KCONFIG_MODE   generic|native|zen4 (default generic; custom `native`/`zen4`
+#                  tunings use their authentic mode, see configure-kernel.sh)
 set -euo pipefail
 
 : "${PKGBUILD_DIR:?}"; : "${SCHEDULER:?}"; : "${ISA_NUM:?}"; : "${WORKDIR:?}"
@@ -74,6 +77,7 @@ echo "series: ${MAJOR_MINOR} (from ${SRCDIR})"
 # variant in config/variants.yml (mirrors its PKGBUILD source=() array).
 # shellcheck disable=SC2086
 bash "${SCRIPTS_DIR}/apply-patches.sh" "$SRCDIR" "$MAJOR_MINOR" ${EXTRA_PATCHES:-}
+KCONFIG_MODE="${KCONFIG_MODE:-generic}" \
 bash "${SCRIPTS_DIR}/configure-kernel.sh" "$SRCDIR" "$PKGBUILD_DIR" "$SCHEDULER" "$ISA_NUM"
 bash "${SCRIPTS_DIR}/ensure-rust-bindgen.sh" "$SRCDIR"
 

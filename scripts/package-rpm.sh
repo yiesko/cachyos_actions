@@ -35,8 +35,12 @@ esac
 # constraint even though RPM would tolerate uppercase. Arch path cannot
 # carry it.
 # NOTE: ${VAR-default} (no colon) so that BUILDER_SUFFIX="" truly
-# disables instead of falling back to the default.
+# disables instead of falling back to the default. Bare `yieskow`
+# auto-becomes `-yieskow` (shared rule, weekly comme custom); empty stays empty.
 BUILDER_SUFFIX="${BUILDER_SUFFIX--yieskow}"
+if [[ -n "$BUILDER_SUFFIX" && "$BUILDER_SUFFIX" != [-+._]* ]]; then
+  BUILDER_SUFFIX="-$BUILDER_SUFFIX"
+fi
 export LOCALVERSION="-${VARIANT}-${ISA}${LTO_SUFFIX}${BUILDER_SUFFIX}"
 export KCFLAGS="-march=${MARCH}"
 export KCPPFLAGS="-march=${MARCH}"
