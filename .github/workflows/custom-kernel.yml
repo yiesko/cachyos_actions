@@ -236,11 +236,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # NOTE: no --target flag, same reason as weekly-build.yml: with a
+          # target commit that differs from the default branch in
+          # .github/workflows/, the API demands the `workflows` permission
+          # and GITHUB_TOKEN can never have it (HTTP 403). The build commit
+          # is pinned in provenance.json + the notes body instead.
           tag="custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}-${{ github.run_number }}"
           shopt -s nullglob
           files=(cells/*)
           gh release create "$tag" \
             --title "Custom ${{ inputs.variant }} ${{ needs.resolve.outputs.isa_label }} ${{ inputs.lto }} ($tag)" \
             --notes-file release-notes.md \
-            --target "${{ github.sha }}" \
             "${files[@]}"

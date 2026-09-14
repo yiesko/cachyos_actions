@@ -393,13 +393,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # NOTE: no --target flag on purpose. gh release create --target <sha>
+          # 403s ("Resource not accessible by integration") whenever the target
+          # commit differs from the default branch in .github/workflows/:
+          # that case needs the `workflows` permission, which GITHUB_TOKEN can
+          # never hold (observed weekly-22: a mid-run push of this very file
+          # broke the release). The exact build commit is pinned instead in
+          # provenance.json + the notes body, so nothing is lost.
           tag="weekly-${{ github.run_number }}"
           shopt -s nullglob
           files=(out/*)
           gh release create "$tag" \
             --title "CachyOS kernels ${{ needs.generate-matrix.outputs.series }} ($tag)" \
             --notes-file release-notes.md \
-            --target "${{ github.sha }}" \
             "${files[@]}"
 
   # ------------------------------------------------------------------
