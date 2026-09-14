@@ -11,8 +11,9 @@ name: Weekly kernel matrix (Arch / Debian / Fedora)
 #
 # Cost facts (GitHub Actions, 2026):
 #   - PUBLIC repos get unlimited Linux minutes -> this matrix is sized
-#     for that (~34 Arch cells + ~82 kbuild cells per week, incl. 48
-#     ThinLTO/Full extras for the 6 desktop variants).
+#     for that (~34 Arch cells + ~82 kbuild cells per run, incl. 48
+#     ThinLTO/Full extras for the 6 desktop variants; cron runs Mon+Thu
+#     and the freshness gate SKIPs changeless runs for ~1-2 min).
 #   - PRIVATE repos only get a few thousand free minutes per month;
 #     a single kernel compile is 60-120+ minutes, so running the full
 #     matrix privately will burn the quota in one run.
@@ -20,7 +21,7 @@ name: Weekly kernel matrix (Arch / Debian / Fedora)
 
 on:
   schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+    - cron: "0 6 * * 1,4" # Mondays + Thursdays 06:00 UTC
   workflow_dispatch:
     inputs:
       variants:

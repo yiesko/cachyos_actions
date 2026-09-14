@@ -83,8 +83,9 @@ scheduler value, and so on).
 That yields 34 ISA-level combinations (38 minus the 4 disabled BMQ
 cells) across 2 build jobs — 34 Arch cells + 82 kbuild cells (incl. 48
 ThinLTO/Full extras for the 6 desktop variants: cachyos, bore, eevdf,
-rt-bore, deckify, rc) ≈ **116 builds per week** — sized for a
-public repo's unlimited Linux minutes.
+rt-bore, deckify, rc) ≈ **116 builds per run** — sized for a
+public repo's unlimited Linux minutes. Cron runs Mon+Thu; runs without
+upstream changes SKIP via the freshness gate (no empty release).
 
 ### 3. Install
 
@@ -214,7 +215,8 @@ bash contrib/fetch-kernel.sh --list cachyos-lts v4  # only print URLs
 
 ### Updating to a new weekly kernel (same repo)
 
-Releases land weekly as stable `weekly-N`. MOK enrollment and TPM2
+Releases land as stable `weekly-N` (cron runs Mon+Thu; changeless runs
+publish nothing). MOK enrollment and TPM2
 sealing are one-time — per new version you only redo fetch + install +
 sign (the `sign-file` helper is per kernel version: re-extract it when the
 script's error hint asks):
@@ -269,8 +271,8 @@ validate-patches.yml  PR gate: shellcheck + patch dry-runs per scheduler, no com
 
 ## Running this pipeline yourself
 
-Dispatch `.github/workflows/weekly-build.yml` manually or let the weekly
-cron run it:
+Dispatch `.github/workflows/weekly-build.yml` manually or let the
+Mon+Thu cron run it:
 
 | Input | Meaning |
 |---|---|
