@@ -400,13 +400,42 @@ jobs:
           # never hold (observed weekly-22: a mid-run push of this very file
           # broke the release). The exact build commit is pinned instead in
           # provenance.json + the notes body, so nothing is lost.
+          #
+          # Upload in batches with retry: a single `gh release create` with
+          # 270+ assets hit HTTP 500 in weekly-25 (uploads.github.com transient).
+          # Creating the release first, then uploading chunks, isolates that.
           tag="weekly-${{ github.run_number }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists (re-run) — reusing it."
+          else
+            gh release create "$tag" \
+              --title "CachyOS kernels ${{ needs.generate-matrix.outputs.series }} ($tag)" \
+              --notes-file release-notes.md
+          fi
           shopt -s nullglob
           files=(out/*)
-          gh release create "$tag" \
-            --title "CachyOS kernels ${{ needs.generate-matrix.outputs.series }} ($tag)" \
-            --notes-file release-notes.md \
-            "${files[@]}"
+          # gh's upload is one curl per file but invoked as one process;
+          # batch it so a 500 on one file doesn't abort the rest, and retry
+          # each batch. 40 files keeps the arg list short and the run time
+          # bounded (weekly is ~270 files).
+          batch_size=40
+          total=${#files[@]}
+          echo "Uploading $total file(s) in batches of $batch_size ..."
+          for ((i=0; i<total; i+=batch_size)); do
+            batch=("${files[@]:i:batch_size}")
+            echo "Batch $((i/batch_size+1))/$(((total+batch_size-1)/batch_size)): ${#batch[@]} file(s)"
+            for attempt in 1 2 3; do
+              if gh release upload "$tag" "${batch[@]}" --clobber; then
+                break
+              fi
+              if (( attempt == 3 )); then
+                echo "::error::gh release upload failed after 3 attempts (batch $((i/batch_size+1)))" >&2
+                exit 1
+              fi
+              echo "warning: batch $((i/batch_size+1)) upload failed (attempt $attempt/3), retrying in $((attempt*10))s ..." >&2
+              sleep $((attempt*10))
+            done
+          done
 
   # ------------------------------------------------------------------
   # Optional (workflow_dispatch only): turn the RPMs into a browsable

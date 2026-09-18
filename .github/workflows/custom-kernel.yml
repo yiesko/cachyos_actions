@@ -241,10 +241,33 @@ jobs:
           # .github/workflows/, the API demands the `workflows` permission
           # and GITHUB_TOKEN can never have it (HTTP 403). The build commit
           # is pinned in provenance.json + the notes body instead.
+          #
+          # Same batching as weekly (see there): isolate create vs uploads.
           tag="custom-${{ inputs.variant }}-${{ needs.resolve.outputs.isa_label }}-${{ inputs.lto }}-${{ github.run_number }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists (re-run) — reusing it."
+          else
+            gh release create "$tag" \
+              --title "Custom ${{ inputs.variant }} ${{ needs.resolve.outputs.isa_label }} ${{ inputs.lto }} ($tag)" \
+              --notes-file release-notes.md
+          fi
           shopt -s nullglob
           files=(cells/*)
-          gh release create "$tag" \
-            --title "Custom ${{ inputs.variant }} ${{ needs.resolve.outputs.isa_label }} ${{ inputs.lto }} ($tag)" \
-            --notes-file release-notes.md \
-            "${files[@]}"
+          batch_size=40
+          total=${#files[@]}
+          echo "Uploading $total file(s) in batches of $batch_size ..."
+          for ((i=0; i<total; i+=batch_size)); do
+            batch=("${files[@]:i:batch_size}")
+            echo "Batch $((i/batch_size+1))/$(((total+batch_size-1)/batch_size)): ${#batch[@]} file(s)"
+            for attempt in 1 2 3; do
+              if gh release upload "$tag" "${batch[@]}" --clobber; then
+                break
+              fi
+              if (( attempt == 3 )); then
+                echo "::error::gh release upload failed after 3 attempts (batch $((i/batch_size+1)))" >&2
+                exit 1
+              fi
+              echo "warning: batch $((i/batch_size+1)) upload failed (attempt $attempt/3), retrying in $((attempt*10))s ..." >&2
+              sleep $((attempt*10))
+            done
+          done

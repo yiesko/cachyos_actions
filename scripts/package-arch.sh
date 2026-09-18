@@ -51,7 +51,22 @@ export CI=true              # PKGBUILD already special-cases CI builds
 
 cd "upstream/${PKGBUILD_DIR}"
 echo "Building ${VARIANT} at x86-64-v${ISA_NUM} (_cpusched=${_cpusched}) ..."
-makepkg -s --noconfirm --skippgpcheck
+# makepkg's own source=() download uses curl without retry; a single
+# CDN hiccup under 70 parallel cells killed hardened v1 in weekly-25
+# (curl 35 Recv failure). Retry the whole makepkg a few times with
+# backoff — second attempt reuses already-fetched sources.
+for _attempt in 1 2 3; do
+  if makepkg -s --noconfirm --skippgpcheck; then
+    break
+  fi
+  rc=$?
+  if (( _attempt == 3 )); then
+    echo "error: makepkg failed after $_attempt attempts." >&2
+    exit $rc
+  fi
+  echo "warning: makepkg attempt $_attempt failed (rc=$rc), retrying in $(( _attempt * 15 ))s ..." >&2
+  sleep $(( _attempt * 15 ))
+done
 
 mkdir -p "${GITHUB_WORKSPACE}/out"
 # Upstream pkgname does NOT encode the ISA level (_processor_opt only
