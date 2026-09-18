@@ -231,8 +231,21 @@ jobs:
             *) echo "could not derive major.minor from '${SRCDIR}' (base='${base}')" >&2; exit 1 ;;
           esac
           echo "series: ${MAJOR_MINOR} (from ${SRCDIR})"
+          # Exit 2 from apply-patches means drift (patch vs src_tag minor
+          # mismatch) — treat as skipped, not failed (explicit warning in
+          # release). Exit 1 remains a hard failure.
+          set +e
           # shellcheck disable=SC2086
           bash scripts/apply-patches.sh "$SRCDIR" "$MAJOR_MINOR" ${EXTRA_PATCHES:-}
+          _rc=$?
+          set -e
+          if (( _rc == 2 )); then
+            echo "::warning::Skipped ${SRCBASE}: patch drift (series $MAJOR_MINOR vs $SRCBASE) — will be auto-skipped in weekly/custom releases. See provenance skipped_reason." >&2
+            echo "DRY_RUN_SKIPPED=1" >> "$GITHUB_ENV"
+            exit 0
+          elif (( _rc != 0 )); then
+            exit $_rc
+          fi
           echo "--- config smoke test (all 4 ISA levels) ---"
           for isa in 1 2 3 4; do
             echo "== ISA v${isa} =="

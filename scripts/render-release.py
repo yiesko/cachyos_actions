@@ -180,18 +180,43 @@ def render_weekly(a, frags, statuses, artifacts):
     lines.append("")
     lines.append("| Variant | ISA | Flavor | Arch | Kbuild (.deb/.rpm) |")
     lines.append("|---|---|---|---|---|")
+    skipped = []
     for cell in include:
         v, isa, lto, suf = cell.get("variant"), cell.get("isa"), cell.get("lto", "none"), cell.get("suffix", "")
         flavor = "gcc" if lto == "none" else lto
         if lto == "none":
             s = statuses.get(f"{v}-{isa}-arch.txt", "")
-            archcell = " :white_check_mark: |" if s == "ok" else (f" :x: (`{s[5:]}`) |" if s.startswith("fail:") else " :grey_question: |")
+            if s.startswith("skipped:"):
+                archcell = f" ⏭️ skipped (`{s[8:]}`) |"
+                skipped.append(f"{v} {isa} arch: {s[8:]}")
+            elif s == "ok":
+                archcell = " :white_check_mark: |"
+            elif s.startswith("fail:"):
+                archcell = f" :x: (`{s[5:]}`) |"
+            else:
+                archcell = " :grey_question: |"
         else:
             archcell = " — |"
         s = statuses.get(f"{v}-{isa}-kbuild{suf}.txt", "")
-        kcell = " :white_check_mark: |" if s == "ok" else (f" :x: (`{s[5:]}`) |" if s.startswith("fail:") else " :grey_question: |")
+        if s.startswith("skipped:"):
+            kcell = f" ⏭️ skipped (`{s[8:]}`) |"
+            skipped.append(f"{v} {isa} {flavor}: {s[8:]}")
+        elif s == "ok":
+            kcell = " :white_check_mark: |"
+        elif s.startswith("fail:"):
+            kcell = f" :x: (`{s[5:]}`) |"
+        else:
+            kcell = " :grey_question: |"
         lines.append(f"| {v} | {isa} | {flavor} |{archcell}{kcell}")
     lines.append("")
+    if skipped:
+        lines.append("### Skipped variants (explicit)")
+        lines.append("")
+        lines.append("Cells skipped due to patch drift (patch series vs src_tag minor mismatch) — not a pipeline failure. They will reappear automatically after the upstream PKGBUILD bumps to the expected base. See `provenance.json → cells[].skipped_reason` and per-cell `patches[].result` for details.")
+        lines.append("")
+        for s in sorted(set(skipped)):
+            lines.append(f"- `{s}`")
+        lines.append("")
     lines.append("### Provenance (veracity · trust · origin)")
     lines.append("")
     lines.append(f"- Pipeline: `{a.repo}` workflow `{a.workflow}` commit `{a.sha}` ([run #{a.run_number}]({run_url})).")

@@ -50,8 +50,8 @@ env_val() {  # env_val <file> <key> -> value or "unknown", never fails
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
 NOW_EPOCH="$(date +%s 2>/dev/null || echo 0)"
 DURATION_S="unknown"
-if [[ "${CELL_START_EPOCH:-0}" =~ ^[0-9]+$ ]] && (( CELL_START_EPOCH > 0 )) && (( NOW_EPOCH > CELL_START_EPOCH )); then
-  DURATION_S="$((NOW_EPOCH - CELL_START_EPOCH))"
+if [[ "${CELL_START_EPOCH:-0}" =~ ^[0-9]+$ ]] && (( ${CELL_START_EPOCH:-0} > 0 )) && (( NOW_EPOCH > ${CELL_START_EPOCH:-0} )); then
+  DURATION_S="$((NOW_EPOCH - ${CELL_START_EPOCH:-0}))"
 fi
 
 OS_PRETTY="unknown"
@@ -131,11 +131,14 @@ export PROV_TARBALL_SHA="$TARBALL_SHA" PROV_TARBALL_SIZE="$TARBALL_SIZE"
 export PROV_GPG_VERIFY="$GPG_VERIFY" PROV_ALLOW_UNVER="$ALLOW_UNVERIFIED"
 export PROV_TARBALL_URL="$TARBALL_URL" PROV_UPSTREAM_HEAD="$UPSTREAM_HEAD"
 export PROV_WORKDIR="${WORKDIR:-}" PROV_SRCDIR="${SRCDIR:-}" PROV_ARTDIR="${ARTIFACT_DIR:-}"
+export PROV_SKIPPED="${SKIPPED_REASON:-}"
 
 python3 - "$OUT" <<'PY' 2>/dev/null || true
 import json, os, glob
 
-def g(n, d="unknown"):
+def g(n, *args):
+    # g(key) -> unknown or value; g(key, default) -> default when unset
+    d = args[0] if args else "unknown"
     v = os.environ.get(n, d)
     return v if v != "" else d
 
@@ -196,6 +199,7 @@ frag = {
     "hz": g("PROV_HZ"),
     "builder_suffix": g("PROV_BUILDER"),
     "localversion": g("PROV_LOCALVERSION"),
+    "skipped_reason": g("PROV_SKIPPED", ""),
     "upstream": {
         "pkgbuild_sha": g("PROV_PKGBUILD_SHA"),
         "linux_commit": g("PROV_LINUX_COMMIT"),

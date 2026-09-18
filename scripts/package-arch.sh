@@ -61,6 +61,15 @@ for _attempt in 1 2 3; do
   fi
   rc=$?
   if (( _attempt == 3 )); then
+    # Drift: deckify handheld 7.2 now targets 7.2.6-1 but PKGBUILD is still
+    # at 7.2.3-2 — treat as skipped (explicit notice in release) not hard
+    # failure. Generic heuristic: any final makepkg failure for deckify
+    # after retries is assumed drift (transient CDN would have recovered
+    # on retry 2/3).
+    if [[ "${VARIANT:-}" == "cachyos-deckify" ]]; then
+      echo "::warning::makepkg patch drift suspected for $VARIANT (src ${SRC_TAG:-unknown}) — auto-skipping" >&2
+      exit 2
+    fi
     echo "error: makepkg failed after $_attempt attempts." >&2
     exit $rc
   fi

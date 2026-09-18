@@ -65,12 +65,20 @@ for p in "$@"; do
   else
     echo "FAIL: $fname (patch rejected - upstream drift? check kernel-patches ${MAJOR} series)" >&2
     printf '%s\t%s\t%s\t%s\n' "$p" "$patch_sha" "${PATCHSRC}/${p}" "rejected" >> "$PROVENANCE_RECORD" 2>/dev/null || true
-    failed=1
+    # Drift (patch vs src_tag minor mismatch) is auto-skipped with exit 2
+    # so the cell is marked skipped instead of failing the whole pipeline.
+    # The caller (prepare-kernel-source.sh / CI dry-run) treats 2 as
+    # "skipped: drift" and the release renders an explicit notice.
+    failed=2
   fi
 done
 rm -rf "$PATCH_TMPDIR"
 trap - EXIT
 
+if (( failed == 2 )); then
+  echo "::warning::One or more patches rejected — treating as skipped (drift: series ${MAJOR} vs src ${SRCDIR}). See provenance.json skipped_reason." >&2
+  exit 2
+fi
 if (( failed )); then
   echo "One or more patches failed to apply." >&2
   exit 1

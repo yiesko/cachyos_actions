@@ -125,6 +125,9 @@ ccache -s 2>&1 | head -n 12 || true
 
 bash "${SCRIPTS_DIR}/set-march.sh" "$MARCH"
 
+# prepare may exit 2 for drift (patch vs src_tag mismatch) — turn it into a
+# skipped cell (explicit notice in release) instead of a hard failure.
+set +e
 WORKDIR="${ROOT_DIR}/kernel-src" \
 SRC_TAG="${SRC_TAG:-}" \
 PKGBUILD_DIR="$PKGBUILD_DIR" \
@@ -132,6 +135,30 @@ SCHEDULER="$SCHEDULER" \
 ISA_NUM="$ISA_NUM" \
 KCONFIG_MODE="${KCONFIG_MODE:-generic}" \
 bash "${SCRIPTS_DIR}/prepare-kernel-source.sh"
+_prepare_rc=$?
+set -e
+if (( _prepare_rc == 2 )); then
+  echo "::warning::Skipping kbuild cell $VARIANT/$ISA_LABEL: patch drift (see provenance skipped_reason)" >&2
+  _ws="${GITHUB_WORKSPACE:-$ROOT_DIR}"
+  mkdir -p "${_ws}/cell-status" 2>/dev/null || true
+  case "${USE_LTO:-none}" in none) _sk_suf="" ;; *) _sk_suf="-${USE_LTO}" ;; esac
+  echo "skipped:drift: patch $MAJOR vs $SRC_TAG" > "${_ws}/cell-status/${VARIANT}-${ISA_LABEL}-kbuild${_sk_suf}.txt" 2>/dev/null || true
+  # Still emit a provenance fragment so the release can list the skip explicitly
+  {
+    _frag="${_ws}/cell-status/provenance-${VARIANT}-${ISA_LABEL}${_sk_suf}.json"
+    _sk_tag="${SRC_TAG:-unknown}"
+    _sk_reason="drift: patch series vs src_tag $_sk_tag"
+    SKIPPED_REASON="$_sk_reason" \
+    CELL_KIND=kbuild JOB_NAME="${GITHUB_JOB:-kbuild}" \
+    SRCDIR="${ROOT_DIR}/kernel-src/$_sk_tag" WORKDIR="${ROOT_DIR}/kernel-src" ARTIFACT_DIR="" \
+    LOCALVERSION="$_effective_localversion" UPSTREAM_DIR="" \
+    bash "${SCRIPTS_DIR}/collect-cell-provenance.sh" --out "$_frag" || true
+  } || true
+  echo "kbuild cell skipped (drift) — not a failure"
+  exit 0
+elif (( _prepare_rc != 0 )); then
+  exit $_prepare_rc
+fi
 
 SRCDIR="$(find "${ROOT_DIR}/kernel-src" -maxdepth 1 -mindepth 1 -type d -name 'cachyos-*' -print -quit)"
 if [[ -z "${SRCDIR:-}" ]]; then

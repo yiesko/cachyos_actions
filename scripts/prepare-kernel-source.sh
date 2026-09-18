@@ -75,8 +75,21 @@ echo "series: ${MAJOR_MINOR} (from ${SRCDIR})"
 
 # EXTRA_PATCHES: space-separated kernel-patches paths declared for this
 # variant in config/variants.yml (mirrors its PKGBUILD source=() array).
+# Exit 2 from apply-patches means drift (patch vs src_tag mismatch) and
+# is propagated as a skipped cell, not a hard failure (see run-* wrappers
+# and validate-patches.yml). The collector still writes provenance with
+# skipped_reason.
 # shellcheck disable=SC2086
-bash "${SCRIPTS_DIR}/apply-patches.sh" "$SRCDIR" "$MAJOR_MINOR" ${EXTRA_PATCHES:-}
+if ! bash "${SCRIPTS_DIR}/apply-patches.sh" "$SRCDIR" "$MAJOR_MINOR" ${EXTRA_PATCHES:-}; then
+  rc=$?
+  if (( rc == 2 )); then
+    echo "::warning::Skipping $SRCDIR: patch drift (series $MAJOR_MINOR vs $SRCDIR) — see provenance skipped_reason." >&2
+    # Leave a marker for the cell wrapper to turn into a skipped fragment
+    printf 'skipped_reason=drift: patch %s vs src %s (series %s)\n' "${EXTRA_PATCHES:-}" "$SRCDIR" "$MAJOR_MINOR" > "${WORKDIR}/skipped-reason.env" 2>/dev/null || true
+    exit 2
+  fi
+  exit $rc
+fi
 KCONFIG_MODE="${KCONFIG_MODE:-generic}" \
 bash "${SCRIPTS_DIR}/configure-kernel.sh" "$SRCDIR" "$PKGBUILD_DIR" "$SCHEDULER" "$ISA_NUM"
 bash "${SCRIPTS_DIR}/ensure-rust-bindgen.sh" "$SRCDIR"

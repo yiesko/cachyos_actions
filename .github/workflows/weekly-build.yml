@@ -169,11 +169,19 @@ jobs:
           # user (makepkg's builder uid); reclaim it for the host steps.
           sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
           mkdir -p cell-status
-          result="${{ steps.build.outcome }}"
-          case "$result" in
-            success) echo ok > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-arch.txt" ;;
-            *)       echo "fail:$result" > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-arch.txt" ;;
-          esac
+          # If the wrapper already wrote a skipped marker, keep it; otherwise
+          # use the step outcome (skipped cells exit 0 after writing their own
+          # skipped file, so they never reach here as "failure").
+          f="cell-status/${{ matrix.variant }}-${{ matrix.isa }}-arch.txt"
+          if [ -f "$f" ] && grep -q "^skipped:" "$f"; then
+            echo "cell already marked as $(cat "$f")"
+          else
+            result="${{ steps.build.outcome }}"
+            case "$result" in
+              success) echo ok > "$f" ;;
+              *)       echo "fail:$result" > "$f" ;;
+            esac
+          fi
 
       - name: Upload cell artifact
         if: always()
@@ -258,15 +266,18 @@ jobs:
       - name: Record cell status
         if: always()
         run: |
-          # Containers may leave the workspace owned by their internal
-          # user (makepkg's builder uid); reclaim it for the host steps.
           sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
           mkdir -p cell-status
-          result="${{ steps.build.outcome }}"
-          case "$result" in
-            success) echo ok > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild${{ matrix.suffix }}.txt" ;;
-            *)       echo "fail:$result" > "cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild${{ matrix.suffix }}.txt" ;;
-          esac
+          f="cell-status/${{ matrix.variant }}-${{ matrix.isa }}-kbuild${{ matrix.suffix }}.txt"
+          if [ -f "$f" ] && grep -q "^skipped:" "$f"; then
+            echo "cell already marked as $(cat "$f")"
+          else
+            result="${{ steps.build.outcome }}"
+            case "$result" in
+              success) echo ok > "$f" ;;
+              *)       echo "fail:$result" > "$f" ;;
+            esac
+          fi
 
       - name: Upload cell artifact
         if: always()

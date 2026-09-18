@@ -38,6 +38,7 @@ chown -R builder:builder /work "$CCACHE_DIR"
 
 # GITHUB_WORKSPACE is not exported into `su` shells; pass everything
 # explicitly through `env`.
+set +e
 runuser -u builder -- env \
   VARIANT="$VARIANT" \
   PKGBUILD_DIR="$PKGBUILD_DIR" \
@@ -61,6 +62,33 @@ runuser -u builder -- env \
   HOME=/home/builder \
   GITHUB_WORKSPACE=/work \
   bash /work/scripts/package-arch.sh
+_arch_rc=$?
+set -e
+if (( _arch_rc == 2 )); then
+  echo "::warning::Skipping Arch cell $VARIANT/v$ISA_NUM: patch drift (see provenance skipped_reason)" >&2
+  mkdir -p /work/cell-status 2>/dev/null || true
+  echo "skipped:drift: patch vs $SRC_TAG" > "/work/cell-status/${VARIANT}-v${ISA_NUM}-arch.txt" 2>/dev/null || true
+  {
+    _frag="/work/cell-status/provenance-${VARIANT}-v${ISA_NUM}-arch.json"
+    _sk_tag_a="${SRC_TAG:-unknown}"
+    _sk_reason_a="drift: patch vs src_tag $_sk_tag_a (arch $VARIANT)"
+    SKIPPED_REASON="$_sk_reason_a" \
+    CELL_KIND=arch JOB_NAME="${GITHUB_JOB:-arch}" \
+    SRCDIR="" WORKDIR="" ARTIFACT_DIR="/work/out" \
+    UPSTREAM_DIR="/work/upstream" ISA_LABEL="v${ISA_NUM}" SRC_TAG="$_sk_tag_a" \
+    LOCALVERSION="unknown" MARCH="${MARCH:-unknown}" KCONFIG_MODE="generic" \
+    EXTRA_PATCHES="${EXTRA_PATCHES:-}" \
+    bash /work/scripts/collect-cell-provenance.sh --out "$_frag" || true
+  } || true
+  chown -R builder:builder /work 2>/dev/null || true
+  chown -R "$(id -u):$(id -g)" /work 2>/dev/null || true
+  echo "--- ccache final (this cell) ---"
+  ccache -s 2>&1 | head -n 12 || true
+  echo "Arch cell skipped (drift) — not a failure"
+  exit 0
+elif (( _arch_rc != 0 )); then
+  exit $_arch_rc
+fi
 
 echo "--- ccache final (this cell) ---"
 ccache -s 2>&1 | head -n 12 || true

@@ -133,6 +133,12 @@ variants:
       Handheld gaming build (Steam Deck support, MSI Claw HID). Unlike
       the flagship, its PKGBUILD DOES apply the BORE patch for the
       'cachyos' scheduler, plus two unconditional misc patches.
+    # Auto-skip note 2026-09-18: misc/0001-handheld.patch (7.2 series,
+    # commit edb006d) now targets cachyos-7.2.6-1 and drifts on the live
+    # tag cachyos-7.2.3-2 (15 hunks). Cells are auto-skipped with an
+    # explicit notice in the release (see provenance.json
+    # skipped_reason) instead of failing the pipeline. Remove this note
+    # once the folder bumps to 7.2.6.
     enabled: true
 
   # --- release candidates ---------------------------------------------------
